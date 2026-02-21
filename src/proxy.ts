@@ -148,12 +148,12 @@ export function createProxy(config: Config) {
     // Send "thinking" indicators at 10s and 90s
     const thinkingTimer = setTimeout(async () => {
       if (claude.isAlive()) {
-        try { await sessionClient.send("💭 Claude is thinking..."); } catch {}
+        try { await sessionClient.send("💭 thinking..."); } catch {}
       }
     }, 10_000);
     const stillThinkingTimer = setTimeout(async () => {
       if (claude.isAlive()) {
-        try { await sessionClient.send("💭 Claude is still thinking..."); } catch {}
+        try { await sessionClient.send("💭 still thinking..."); } catch {}
       }
     }, 90_000);
 
