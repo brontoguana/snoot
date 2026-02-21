@@ -78,6 +78,75 @@ function handleSetUser(args: string[]): never {
   process.exit(0);
 }
 
+function handleRestart(args: string[]): never {
+  const snootDir = resolve(".snoot");
+  const channel = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
+
+  if (!existsSync(snootDir)) {
+    console.log("No .snoot directory found — nothing to restart.");
+    process.exit(1);
+  }
+
+  // Find channels to restart
+  const channels: string[] = [];
+  if (channel) {
+    channels.push(channel);
+  } else {
+    // Find all channels with a running process
+    for (const entry of readdirSync(snootDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const pidFile = resolve(snootDir, entry.name, "snoot.pid");
+        if (existsSync(pidFile)) {
+          const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+          try {
+            process.kill(pid, 0);
+            channels.push(entry.name);
+          } catch {
+            // Stale PID
+          }
+        }
+      }
+    }
+  }
+
+  if (channels.length === 0) {
+    console.log("No running snoot instances found to restart.");
+    process.exit(1);
+  }
+
+  for (const ch of channels) {
+    const launchFile = resolve(snootDir, ch, "launch.json");
+    const pidFile = resolve(snootDir, ch, "snoot.pid");
+
+    // Read saved launch args
+    let launchArgs: string[] = [ch];
+    if (existsSync(launchFile)) {
+      try {
+        const data = JSON.parse(readFileSync(launchFile, "utf-8"));
+        if (Array.isArray(data.args)) launchArgs = data.args;
+      } catch {}
+    }
+
+    // Kill existing
+    killByPidFile(pidFile);
+
+    // Re-launch with saved args
+    console.log(`Restarting channel "${ch}" with args: ${launchArgs.join(" ")}`);
+    const child = Bun.spawn(["bun", SNOOT_SRC, ...launchArgs], {
+      cwd: existsSync(resolve(snootDir, ch, "launch.json"))
+        ? JSON.parse(readFileSync(resolve(snootDir, ch, "launch.json"), "utf-8")).cwd ?? process.cwd()
+        : process.cwd(),
+      env: process.env,
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    child.unref();
+  }
+
+  process.exit(0);
+}
+
 function resolveUserSessionId(userSessionId: string, baseDir: string): string {
   // 1. CLI --user flag (highest priority)
   if (userSessionId) return userSessionId;
@@ -105,7 +174,7 @@ function parseArgs(): Config & { foreground: boolean } {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
        snoot shutdown [channel]
-       snoot restart <channel> [options]
+       snoot restart [channel]
        snoot set-user <session-id>
 
 Options:
@@ -118,7 +187,7 @@ Options:
 
 Commands:
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
-  restart <channel>     Stop and restart a channel (same as starting with new options).
+  restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
   set-user <session-id> Save your Session ID globally (~/.snoot/user.json).
 `);
     process.exit(0);
@@ -133,15 +202,9 @@ Commands:
     handleSetUser(args.slice(1));
   }
 
-  // "restart" just means kill existing then start — acquireLock handles the kill,
-  // so we just strip the "restart" keyword and proceed normally
-  const isRestart = args[0] === "restart";
-  if (isRestart) {
-    args.shift();
-    if (args.length === 0) {
-      console.error("Usage: snoot restart <channel> [options]");
-      process.exit(1);
-    }
+  // "restart" — kill existing then re-launch with saved args
+  if (args[0] === "restart") {
+    handleRestart(args.slice(1));
   }
 
   const channel = args[0];
@@ -322,6 +385,13 @@ async function main(): Promise<void> {
   }
 
   acquireLock(config.baseDir);
+
+  // Save launch args so "snoot restart" can re-launch with same config
+  const launchArgs = process.argv.slice(2).filter(a => a !== "restart");
+  writeFileSync(
+    `${config.baseDir}/launch.json`,
+    JSON.stringify({ args: launchArgs, cwd: process.cwd() })
+  );
 
   console.log(`Snoot starting (pid ${process.pid})...`);
   console.log(`  Channel: ${config.channel}`);
