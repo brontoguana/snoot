@@ -1,4 +1,4 @@
-import type { Config, ClaudeManager, StreamJsonOutput } from "./types.js";
+import type { Config, ClaudeManager, ClaudeStatus, StreamJsonOutput } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
 export function createClaudeManager(config: Config): ClaudeManager {
@@ -11,6 +11,8 @@ export function createClaudeManager(config: Config): ClaudeManager {
     reject: (err: Error) => void;
   }> = [];
   let accumulatedText = "";
+  let spawnedAt: number | null = null;
+  let lastActivityAt: number | null = null;
 
   function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
@@ -49,6 +51,8 @@ export function createClaudeManager(config: Config): ClaudeManager {
 
     alive = true;
     accumulatedText = "";
+    spawnedAt = Date.now();
+    lastActivityAt = Date.now();
 
     console.log(`[claude] Spawned process (pid: ${proc.pid})`);
     console.log(`[claude] Args: ${args.join(" ")}`);
@@ -155,6 +159,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
   }
 
   function handleOutputMessage(msg: StreamJsonOutput): void {
+    lastActivityAt = Date.now();
     console.log(`[claude] Output message type: ${msg.type}`);
     switch (msg.type) {
       case "assistant": {
@@ -261,5 +266,14 @@ export function createClaudeManager(config: Config): ClaudeManager {
     exitCallbacks.push(cb);
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit };
+  function getStatus(): ClaudeStatus {
+    return {
+      alive,
+      busy: responseResolvers.length > 0,
+      spawnedAt,
+      lastActivityAt,
+    };
+  }
+
+  return { isAlive, send, waitForResponse, kill, onExit, getStatus };
 }

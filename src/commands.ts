@@ -20,6 +20,7 @@ export function handleCommand(
         response: [
           "Snoot commands:",
           "  /help — show this message",
+          "  /hi — check if Claude is busy and when it last did something",
           "  /status — show current state",
           "  /context — show summary and pins",
           `  /mode <chat|research|coding> — switch mode (current: ${config.mode})`,
@@ -32,6 +33,35 @@ export function handleCommand(
           "  /forget or /clear — clear all context and restart",
         ].join("\n"),
       };
+
+    case "/hi":
+    case "/update": {
+      const status = claude.getStatus();
+      if (!status.alive) {
+        return { response: "Claude is idle — no process running. Send a message to wake it up." };
+      }
+      const now = Date.now();
+      const ago = (ts: number) => {
+        const secs = Math.floor((now - ts) / 1000);
+        if (secs < 60) return `${secs}s ago`;
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `${mins}m ${secs % 60}s ago`;
+        return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
+      };
+      const parts: string[] = [];
+      if (status.busy) {
+        parts.push("Claude is busy — working on a response.");
+      } else {
+        parts.push("Claude is alive but not currently processing.");
+      }
+      if (status.spawnedAt) {
+        parts.push(`Process started: ${ago(status.spawnedAt)}`);
+      }
+      if (status.lastActivityAt) {
+        parts.push(`Last activity: ${ago(status.lastActivityAt)}`);
+      }
+      return { response: parts.join("\n") };
+    }
 
     case "/status": {
       const state = context.getState();

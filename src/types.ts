@@ -71,12 +71,20 @@ export type StreamJsonOutput =
 
 // -- Claude process --
 
+export interface ClaudeStatus {
+  alive: boolean;
+  busy: boolean; // has pending response resolvers
+  spawnedAt: number | null; // timestamp when process was spawned
+  lastActivityAt: number | null; // timestamp of last stdout message
+}
+
 export interface ClaudeManager {
   isAlive(): boolean;
   send(text: string, promptFile?: string): void;
   waitForResponse(): Promise<string>;
   kill(): Promise<void>;
   onExit(cb: () => void): void;
+  getStatus(): ClaudeStatus;
 }
 
 // -- Session --
