@@ -37,6 +37,8 @@ export async function createSessionClient(config: Config): Promise<SessionClient
 
   function startListening(onMessage: (text: string) => void): void {
     const startedAt = Date.now();
+    const seenTimestamps = new Set<number>();
+
     session.addPoller(new Poller());
 
     session.on("message", (message: any) => {
@@ -44,11 +46,21 @@ export async function createSessionClient(config: Config): Promise<SessionClient
       if (message.from !== config.userSessionId) {
         return;
       }
+
+      const ts: number | undefined = message.timestamp;
+      if (!ts) return;
+
       // Skip messages from before this session started
-      if (message.timestamp && message.timestamp < startedAt) {
-        console.log(`[session] Skipping old message (${new Date(message.timestamp).toLocaleTimeString()})`);
+      if (ts < startedAt) {
         return;
       }
+
+      // Deduplicate by sender timestamp (stable across redeliveries)
+      if (seenTimestamps.has(ts)) {
+        return;
+      }
+      seenTimestamps.add(ts);
+
       const text = message.text;
       if (text) {
         onMessage(text);

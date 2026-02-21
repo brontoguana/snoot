@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import "@session.js/bun-network";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { resolve } from "path";
 import type { Config, Mode } from "./types.js";
 import { createProxy } from "./proxy.js";
@@ -92,10 +92,45 @@ Options:
   };
 }
 
+function acquireLock(baseDir: string): void {
+  const lockFile = `${baseDir}/snoot.pid`;
+  mkdirSync(baseDir, { recursive: true });
+
+  // Check for existing process
+  if (existsSync(lockFile)) {
+    const oldPid = parseInt(readFileSync(lockFile, "utf-8").trim(), 10);
+    if (!isNaN(oldPid)) {
+      try {
+        process.kill(oldPid, 0); // test if alive
+        // Process exists — kill it
+        console.log(`Killing existing snoot process (pid ${oldPid})...`);
+        process.kill(oldPid, "SIGTERM");
+        // Brief wait for it to die
+        Bun.sleepSync(500);
+        try { process.kill(oldPid, "SIGKILL"); } catch {}
+      } catch {
+        // Process doesn't exist, stale lock
+      }
+    }
+  }
+
+  // Write our PID
+  writeFileSync(lockFile, String(process.pid));
+
+  // Clean up on exit
+  const cleanup = () => {
+    try { unlinkSync(lockFile); } catch {}
+  };
+  process.on("exit", cleanup);
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+}
+
 async function main(): Promise<void> {
   const config = parseArgs();
+  acquireLock(config.baseDir);
 
-  console.log(`Snoot starting...`);
+  console.log(`Snoot starting (pid ${process.pid})...`);
   console.log(`  Channel: ${config.channel}`);
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
