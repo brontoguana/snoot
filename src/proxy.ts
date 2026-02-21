@@ -85,6 +85,20 @@ export function createProxy(config: Config) {
         if (claude.isAlive()) await claude.kill();
         await context.reset();
       } else {
+        if (cmdResult.restartProcess) {
+          if (claude.isAlive()) await claude.kill();
+          await sessionClient.send(cmdResult.response);
+          // Re-exec with same args — new process acquires the lock
+          Bun.spawn(process.argv, {
+            cwd: process.cwd(),
+            env: process.env,
+            stdout: "inherit",
+            stderr: "inherit",
+            stdin: "ignore",
+          }).unref();
+          process.exit(0);
+          return;
+        }
         if (cmdResult.killProcess && claude.isAlive()) {
           await claude.kill();
         }

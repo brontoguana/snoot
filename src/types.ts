@@ -6,7 +6,6 @@ export interface Config {
   channel: string;
   userSessionId: string;
   mode: Mode;
-  idleTimeout: number; // seconds
   budgetUsd: number;
   compactAt: number; // trigger compaction when recent pairs exceed this
   windowSize: number; // keep this many pairs after compaction
@@ -95,6 +94,7 @@ export interface CommandResult {
   response: string;
   killProcess?: boolean;
   triggerCompaction?: boolean;
+  restartProcess?: boolean;
 }
 
 // -- Context Store --

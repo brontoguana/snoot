@@ -111,7 +111,6 @@ function parseArgs(): Config & { foreground: boolean } {
 Options:
   --user <session-id>   User's Session ID (overrides saved ID)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
-  --timeout <seconds>   Idle timeout before killing Claude process (default: 90)
   --budget <usd>        Max budget per Claude process in USD (default: 1.00)
   --compact-at <n>      Trigger compaction at N message pairs (default: 20)
   --window <n>          Keep N pairs after compaction (default: 15)
@@ -148,7 +147,6 @@ Commands:
   const channel = args[0];
   let userSessionId = "";
   let mode: Mode = "coding";
-  let idleTimeout = 90;
   let budgetUsd = 1.0;
   let compactAt = 20;
   let windowSize = 15;
@@ -165,9 +163,6 @@ Commands:
           console.error(`Invalid mode: ${mode}. Choose: chat, research, coding`);
           process.exit(1);
         }
-        break;
-      case "--timeout":
-        idleTimeout = parseInt(args[++i] ?? "90", 10);
         break;
       case "--budget":
         budgetUsd = parseFloat(args[++i] ?? "1.00");
@@ -212,7 +207,6 @@ Commands:
     channel,
     userSessionId,
     mode,
-    idleTimeout,
     budgetUsd,
     compactAt,
     windowSize,
@@ -333,7 +327,6 @@ async function main(): Promise<void> {
   console.log(`  Channel: ${config.channel}`);
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
-  console.log(`  Idle timeout: ${config.idleTimeout}s`);
   console.log(`  Budget: $${config.budgetUsd.toFixed(2)}/process`);
   console.log(`  Compact at: ${config.compactAt} pairs, window: ${config.windowSize}`);
 

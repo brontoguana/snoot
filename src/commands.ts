@@ -27,6 +27,8 @@ export function handleCommand(
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate and set avatar from description",
           "  /compact — force context compaction",
+          "  /kill — terminate the Claude process",
+          "  /restart — restart the snoot process",
           "  /forget or /clear — clear all context and restart",
         ].join("\n"),
       };
@@ -111,11 +113,26 @@ export function handleCommand(
       };
     }
 
+    case "/kill":
+      if (!claude.isAlive()) {
+        return { response: "No Claude process running." };
+      }
+      return {
+        response: "Claude process terminated.",
+        killProcess: true,
+      };
+
     case "/compact":
       return {
         response: "Compacting context...",
         killProcess: true,
         triggerCompaction: true,
+      };
+
+    case "/restart":
+      return {
+        response: "Restarting snoot...",
+        restartProcess: true,
       };
 
     case "/forget":

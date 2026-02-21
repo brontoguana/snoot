@@ -5,22 +5,12 @@ export function createClaudeManager(config: Config): ClaudeManager {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let alive = false;
   let exitCallbacks: Array<() => void> = [];
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-
   // Response queue: resolvers waiting for result messages
   let responseResolvers: Array<{
     resolve: (text: string) => void;
     reject: (err: Error) => void;
   }> = [];
   let accumulatedText = "";
-
-  function resetIdleTimer(): void {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      console.log("[claude] Idle timeout reached, shutting down process");
-      kill();
-    }, config.idleTimeout * 1000);
-  }
 
   function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
@@ -59,7 +49,6 @@ export function createClaudeManager(config: Config): ClaudeManager {
 
     alive = true;
     accumulatedText = "";
-    resetIdleTimer();
 
     console.log(`[claude] Spawned process (pid: ${proc.pid})`);
     console.log(`[claude] Args: ${args.join(" ")}`);
@@ -73,7 +62,6 @@ export function createClaudeManager(config: Config): ClaudeManager {
     // Handle process exit
     proc.exited.then((code) => {
       alive = false;
-      if (idleTimer) clearTimeout(idleTimer);
 
       if (code !== 0) {
         console.error(`[claude] Process exited with code ${code}`);
@@ -120,7 +108,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
 
         for (const line of lines) {
           if (!line.trim()) continue;
-          resetIdleTimer();
+
 
           try {
             const msg: StreamJsonOutput = JSON.parse(line);
@@ -220,7 +208,6 @@ export function createClaudeManager(config: Config): ClaudeManager {
       const stdin = proc!.stdin as import("bun").FileSink;
       stdin.write(message);
       stdin.flush();
-      resetIdleTimer();
     } catch (err) {
       console.error("[claude] Error writing to stdin:", err);
     }
@@ -236,7 +223,6 @@ export function createClaudeManager(config: Config): ClaudeManager {
     if (!proc || !alive) return;
 
     alive = false;
-    if (idleTimer) clearTimeout(idleTimer);
 
     try {
       // Close stdin to let Claude finish gracefully
