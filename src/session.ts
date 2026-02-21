@@ -35,6 +35,18 @@ export async function createSessionClient(config: Config): Promise<SessionClient
   const session = new Session();
   session.setMnemonic(identity.mnemonic, identity.displayName);
 
+  // Restore cached avatar if available
+  const avatarCache = `${config.baseDir}/avatar.png`;
+  if (existsSync(avatarCache)) {
+    try {
+      const png = readFileSync(avatarCache);
+      await session.setAvatar(new Uint8Array(png));
+      console.log("[session] Restored cached avatar");
+    } catch (err) {
+      console.error("[session] Failed to restore avatar:", err);
+    }
+  }
+
   function startListening(onMessage: (text: string) => void): void {
     const startedAt = Date.now();
     const seenTimestamps = new Set<number>();
@@ -107,6 +119,10 @@ export async function createSessionClient(config: Config): Promise<SessionClient
 
   async function setAvatar(png: Uint8Array): Promise<void> {
     await session.setAvatar(png);
+    // Persist so avatar survives restarts
+    const avatarCache = `${config.baseDir}/avatar.png`;
+    writeFileSync(avatarCache, png);
+    console.log(`[session] Avatar cached to ${avatarCache}`);
   }
 
   function getSessionId(): string {
