@@ -22,7 +22,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
     }, config.idleTimeout * 1000);
   }
 
-  function spawnProcess(): void {
+  function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
     const args = [
       "claude",
@@ -34,6 +34,10 @@ export function createClaudeManager(config: Config): ClaudeManager {
       "--max-budget-usd", config.budgetUsd.toString(),
       "--no-session-persistence",
     ];
+
+    if (promptFile) {
+      args.push("--append-system-prompt-file", promptFile);
+    }
 
     if (tools) {
       args.push("--tools", tools);
@@ -202,18 +206,14 @@ export function createClaudeManager(config: Config): ClaudeManager {
     return alive;
   }
 
-  function send(text: string, isInitial?: boolean, contextPrefix?: string): void {
+  function send(text: string, promptFile?: string): void {
     if (!alive) {
-      spawnProcess();
+      spawnProcess(promptFile);
     }
-
-    const content = isInitial && contextPrefix
-      ? contextPrefix + "\n\n---\n\n" + text
-      : text;
 
     const message = JSON.stringify({
       type: "user",
-      message: { role: "user", content },
+      message: { role: "user", content: text },
     }) + "\n";
 
     try {

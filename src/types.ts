@@ -74,7 +74,7 @@ export type StreamJsonOutput =
 
 export interface ClaudeManager {
   isAlive(): boolean;
-  send(text: string, isInitial?: boolean, contextPrefix?: string): void;
+  send(text: string, promptFile?: string): void;
   waitForResponse(): Promise<string>;
   kill(): Promise<void>;
   onExit(cb: () => void): void;

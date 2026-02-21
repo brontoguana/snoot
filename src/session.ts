@@ -36,11 +36,17 @@ export async function createSessionClient(config: Config): Promise<SessionClient
   session.setMnemonic(identity.mnemonic, identity.displayName);
 
   function startListening(onMessage: (text: string) => void): void {
+    const startedAt = Date.now();
     session.addPoller(new Poller());
 
-    session.on("message", (message) => {
+    session.on("message", (message: any) => {
       // Only accept messages from the configured user
       if (message.from !== config.userSessionId) {
+        return;
+      }
+      // Skip messages from before this session started
+      if (message.timestamp && message.timestamp < startedAt) {
+        console.log(`[session] Skipping old message (${new Date(message.timestamp).toLocaleTimeString()})`);
         return;
       }
       const text = message.text;

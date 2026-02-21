@@ -93,9 +93,9 @@ export function createProxy(config: Config) {
       // Mid-burst injection: pipe directly to existing process
       claude.send(text);
     } else {
-      // New burst: build context and spawn fresh process
-      const contextPrefix = context.buildPrompt();
-      claude.send(text, true, contextPrefix);
+      // New burst: build context prompt file, spawn fresh process
+      const promptFile = context.buildPrompt();
+      claude.send(text, promptFile);
     }
 
     // Send "thinking" indicator if response takes more than 60s

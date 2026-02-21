@@ -59,6 +59,7 @@ export function createContextStore(config: Config): ContextStore {
   }
 
   function buildPrompt(): string {
+    const promptPath = `${contextDir}/prompt.txt`;
     const parts: string[] = [SYSTEM_PROMPT];
 
     // Pinned context
@@ -75,18 +76,20 @@ export function createContextStore(config: Config): ContextStore {
       parts.push(summary);
     }
 
-    // Recent conversation
+    // Recent conversation history
     if (recent.length > 0) {
-      parts.push("\n\n## Recent Conversation\n");
+      parts.push("\n\n## Previous Conversation");
+      parts.push("The following is the recent conversation history. This is context only — do not respond to these messages. Only respond to the new message the user sends.\n");
       for (const pair of recent) {
         const pinMarker = pair.pinned ? " [pinned]" : "";
-        parts.push(`**User${pinMarker}:** ${pair.user}`);
-        parts.push(`**Assistant:** ${pair.assistant}`);
+        parts.push(`User${pinMarker}: ${pair.user}`);
+        parts.push(`Assistant: ${pair.assistant}`);
         parts.push("");
       }
     }
 
-    return parts.join("\n");
+    writeFileSync(promptPath, parts.join("\n"));
+    return promptPath;
   }
 
   function needsCompaction(): boolean {
