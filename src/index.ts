@@ -2,7 +2,7 @@
 
 import "@session.js/bun-network";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync } from "fs";
-import { resolve, dirname } from "path";
+import { resolve, dirname, basename } from "path";
 import { homedir } from "os";
 import type { Config, Mode } from "./types.js";
 import { createProxy } from "./proxy.js";
@@ -20,13 +20,33 @@ interface InstanceInfo {
   startedAt: string;
 }
 
+function detectProjectName(cwd: string): string {
+  // Walk up from cwd looking for .git or package.json
+  let dir = cwd;
+  while (dir !== "/") {
+    if (existsSync(resolve(dir, ".git"))) {
+      return basename(dir);
+    }
+    const pkgPath = resolve(dir, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+        if (pkg.name) return pkg.name;
+      } catch {}
+      return basename(dir);
+    }
+    dir = dirname(dir);
+  }
+  return basename(cwd);
+}
+
 function registerInstance(channel: string, cwd: string, args: string[]): void {
   mkdirSync(INSTANCES_DIR, { recursive: true });
   const info: InstanceInfo = {
     channel,
     pid: process.pid,
     cwd,
-    project: cwd.split("/").pop() ?? cwd,
+    project: detectProjectName(cwd),
     args,
     startedAt: new Date().toISOString(),
   };
@@ -128,7 +148,7 @@ function handlePs(): never {
       continue;
     }
     const status = `running (pid ${inst.pid})`;
-    console.log(`  ${inst.channel}  ${status}  ${inst.project}  ${inst.cwd}`);
+    console.log(`  ${inst.channel}  ${status}  ${inst.cwd}`);
     found++;
   }
 

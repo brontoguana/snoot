@@ -1,9 +1,11 @@
+import { join } from "path";
+import { existsSync } from "fs";
 import type { Config } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
-import { generateAvatar } from "./profile.js";
+import { buildProfilePrompt, convertAvatarSvg } from "./profile.js";
 
 export function createProxy(config: Config) {
   const context = createContextStore(config);
@@ -12,6 +14,9 @@ export function createProxy(config: Config) {
   let processing = false;
   let messageQueue: string[] = [];
   let shuttingDown = false;
+  let pendingAvatar = false;
+
+  const avatarSvgPath = join(config.baseDir, "avatar.svg");
 
   async function start(): Promise<void> {
     await context.load();
@@ -69,11 +74,13 @@ export function createProxy(config: Config) {
   async function handleMessage(text: string): Promise<void> {
     console.log(`[proxy] Received: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""}`);
 
-    // Handle /profile separately (async image generation)
+    // Handle /profile — transform into a Claude message
     const profileMatch = text.trim().match(/^\/profile\s+(.+)/i);
     if (profileMatch) {
-      await handleProfile(profileMatch[1]);
-      return;
+      pendingAvatar = true;
+      const prompt = buildProfilePrompt(profileMatch[1], avatarSvgPath);
+      text = prompt;
+      // Fall through to normal Claude handling below
     }
 
     // Check for /commands
@@ -121,12 +128,12 @@ export function createProxy(config: Config) {
       claude.send(text, promptFile);
     }
 
-    // Send "thinking" indicators at 20s and 90s
+    // Send "thinking" indicators at 10s and 90s
     const thinkingTimer = setTimeout(async () => {
       if (claude.isAlive()) {
         try { await sessionClient.send("💭 Claude is thinking..."); } catch {}
       }
-    }, 20_000);
+    }, 10_000);
     const stillThinkingTimer = setTimeout(async () => {
       if (claude.isAlive()) {
         try { await sessionClient.send("💭 Claude is still thinking..."); } catch {}
@@ -141,6 +148,27 @@ export function createProxy(config: Config) {
     // Skip empty responses (e.g. idle timeout with no pending work)
     if (!response) return;
 
+    // If this was a /profile request, check for the SVG file and set avatar
+    if (pendingAvatar) {
+      pendingAvatar = false;
+      try {
+        if (existsSync(avatarSvgPath)) {
+          const png = await convertAvatarSvg(avatarSvgPath);
+          await sessionClient.setAvatar(png);
+          await sessionClient.send("Avatar updated!");
+          console.log(`[proxy] Avatar set (${png.length} bytes)`);
+        } else {
+          await sessionClient.send("Avatar generation failed: SVG file was not created.");
+          console.error("[proxy] Avatar SVG not found at", avatarSvgPath);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        console.error("[proxy] Avatar conversion failed:", err);
+        await sessionClient.send(`Avatar failed: ${msg}`);
+      }
+      return;
+    }
+
     // Record the exchange
     const pair = {
       id: context.nextPairId(),
@@ -152,22 +180,6 @@ export function createProxy(config: Config) {
 
     // Send response to user via Session
     await sessionClient.send(response);
-  }
-
-  async function handleProfile(description: string): Promise<void> {
-    await sessionClient.send("Generating avatar...");
-    console.log(`[proxy] Generating avatar: ${description}`);
-
-    try {
-      const png = await generateAvatar(description);
-      await sessionClient.setAvatar(png);
-      await sessionClient.send("Avatar updated!");
-      console.log(`[proxy] Avatar set (${png.length} bytes)`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      console.error("[proxy] Avatar generation failed:", err);
-      await sessionClient.send(`Avatar generation failed: ${msg}`);
-    }
   }
 
   async function shutdown(): Promise<void> {
