@@ -19,20 +19,24 @@ export function createClaudeManager(config: Config): ClaudeManager {
   let lastActivityAt: number | null = null;
   let rateLimitDetected = false;
   let lastUserMessage = "";
+  let lastPromptFile: string | undefined;
   let rateLimitRetryCount = 0;
+  let pendingRetry = false;
 
   function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
     const args = [
       "claude",
       "-p",
-      "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
       "--permission-mode", "bypassPermissions",
-      "--max-budget-usd", config.budgetUsd.toString(),
       "--no-session-persistence",
     ];
+
+    if (config.budgetUsd !== undefined) {
+      args.push("--max-budget-usd", config.budgetUsd.toString());
+    }
 
     if (promptFile) {
       args.push("--append-system-prompt-file", promptFile);
@@ -80,6 +84,13 @@ export function createClaudeManager(config: Config): ClaudeManager {
         console.log("[claude] Process exited normally");
       }
 
+      // If we're waiting for a rate limit retry, don't resolve pending resolvers
+      if (pendingRetry) {
+        accumulatedText = "";
+        for (const cb of exitCallbacks) cb();
+        return;
+      }
+
       // Resolve any pending response resolvers
       const pending = responseResolvers;
       responseResolvers = [];
@@ -90,7 +101,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
         } else if (code !== 0) {
           resolve(`[Claude process failed (exit code ${code})]`);
         } else {
-          // Process exited cleanly but no response — idle timeout or empty result
+          // Process exited cleanly but no response — empty result
           resolve("");
         }
       }
@@ -209,6 +220,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
         if (!responseText && rateLimitDetected && rateLimitRetryCount < MAX_RATE_LIMIT_RETRIES && lastUserMessage) {
           rateLimitRetryCount++;
           rateLimitDetected = false;
+          pendingRetry = true;
           console.log(`[claude] Rate limited — retrying in ${RATE_LIMIT_RETRY_DELAY / 1000}s (attempt ${rateLimitRetryCount}/${MAX_RATE_LIMIT_RETRIES})`);
 
           // Notify proxy so it can tell the user
@@ -216,18 +228,16 @@ export function createClaudeManager(config: Config): ClaudeManager {
             cb(RATE_LIMIT_RETRY_DELAY / 1000, rateLimitRetryCount);
           }
 
-          // Wait and resend — don't resolve the promise, keep it pending
           setTimeout(() => {
-            if (!alive) return;
-            console.log(`[claude] Resending after rate limit (attempt ${rateLimitRetryCount})`);
-            const message = JSON.stringify({
-              type: "user",
-              message: { role: "user", content: lastUserMessage },
-            }) + "\n";
+            pendingRetry = false;
+
+            // Spawn a fresh process for the retry
+            console.log(`[claude] Resending after rate limit (attempt ${rateLimitRetryCount}) — spawning new process`);
+            spawnProcess(lastPromptFile);
             try {
               const stdin = proc!.stdin as import("bun").FileSink;
-              stdin.write(message);
-              stdin.flush();
+              stdin.write(lastUserMessage);
+              stdin.end();
             } catch (err) {
               console.error("[claude] Error resending after rate limit:", err);
               const resolver = responseResolvers.shift();
@@ -258,22 +268,25 @@ export function createClaudeManager(config: Config): ClaudeManager {
   }
 
   function send(text: string, promptFile?: string): void {
-    if (!alive) {
-      spawnProcess(promptFile);
-    }
-
     lastUserMessage = text;
+    lastPromptFile = promptFile;
     rateLimitRetryCount = 0;
 
-    const message = JSON.stringify({
-      type: "user",
-      message: { role: "user", content: text },
-    }) + "\n";
+    // Kill any leftover process (shouldn't exist, but safety)
+    if (proc && alive) {
+      try { proc.kill("SIGKILL"); } catch {}
+      proc = null;
+      alive = false;
+    }
 
+    // Spawn fresh process
+    spawnProcess(promptFile);
+
+    // Write prompt as plain text to stdin, then close
     try {
       const stdin = proc!.stdin as import("bun").FileSink;
-      stdin.write(message);
-      stdin.flush();
+      stdin.write(text);
+      stdin.end();
     } catch (err) {
       console.error("[claude] Error writing to stdin:", err);
     }

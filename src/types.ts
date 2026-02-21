@@ -6,7 +6,7 @@ export interface Config {
   channel: string;
   userSessionId: string;
   mode: Mode;
-  budgetUsd: number;
+  budgetUsd?: number; // undefined = no budget limit
   compactAt: number; // trigger compaction when recent pairs exceed this
   windowSize: number; // keep this many pairs after compaction
   baseDir: string; // snoot data directory (.snoot/<channel>)
@@ -36,12 +36,6 @@ export interface ContextState {
 }
 
 // -- Claude stream-json protocol --
-
-/** Input message sent to Claude via stdin */
-export interface StreamJsonUserMessage {
-  type: "user";
-  message: { role: "user"; content: string };
-}
 
 /** Output: assistant message with complete content */
 export interface StreamJsonAssistantMessage {

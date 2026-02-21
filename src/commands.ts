@@ -28,7 +28,7 @@ export function handleCommand(
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate and set avatar from description",
           "  /compact — force context compaction",
-          "  /kill — terminate the Claude process",
+          "  /kill — cancel the current request",
           "  /restart — restart the snoot process",
           "  /forget or /clear — clear all context and restart",
         ].join("\n"),
@@ -38,7 +38,7 @@ export function handleCommand(
     case "/update": {
       const status = claude.getStatus();
       if (!status.alive) {
-        return { response: "Claude is idle — no process running. Send a message to wake it up." };
+        return { response: "Claude is idle. Send a message to start a new request." };
       }
       const now = Date.now();
       const ago = (ts: number) => {
@@ -49,13 +49,9 @@ export function handleCommand(
         return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
       };
       const parts: string[] = [];
-      if (status.busy) {
-        parts.push("Claude is busy — working on a response.");
-      } else {
-        parts.push("Claude is alive but not currently processing.");
-      }
+      parts.push("Claude is processing a request.");
       if (status.spawnedAt) {
-        parts.push(`Process started: ${ago(status.spawnedAt)}`);
+        parts.push(`Started: ${ago(status.spawnedAt)}`);
       }
       if (status.lastActivityAt) {
         parts.push(`Last activity: ${ago(status.lastActivityAt)}`);
@@ -68,7 +64,7 @@ export function handleCommand(
       return {
         response: [
           `Mode: ${config.mode}`,
-          `Claude process: ${claude.isAlive() ? "alive" : "idle"}`,
+          `Claude: ${claude.isAlive() ? "processing" : "idle"}`,
           `Messages: ${state.totalPairs} total, ${context.getRecent().length} in window`,
           `Pins: ${state.pins.length}`,
           `Compaction at: ${config.compactAt} messages`,
@@ -145,10 +141,10 @@ export function handleCommand(
 
     case "/kill":
       if (!claude.isAlive()) {
-        return { response: "No Claude process running." };
+        return { response: "Nothing to cancel — Claude is idle." };
       }
       return {
-        response: "Claude process terminated.",
+        response: "Request cancelled.",
         killProcess: true,
       };
 

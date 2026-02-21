@@ -226,7 +226,7 @@ function parseArgs(): Config & { foreground: boolean } {
 Options:
   --user <session-id>   User's Session ID (overrides saved ID)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
-  --budget <usd>        Max budget per Claude process in USD (default: 1.00)
+  --budget <usd>        Max budget per message in USD (no limit by default)
   --compact-at <n>      Trigger compaction at N message pairs (default: 20)
   --window <n>          Keep N pairs after compaction (default: 15)
   --fg                  Run in foreground instead of daemonizing
@@ -261,7 +261,7 @@ Commands:
   const channel = args[0];
   let userSessionId = "";
   let mode: Mode = "coding";
-  let budgetUsd = 1.0;
+  let budgetUsd: number | undefined = undefined;
   let compactAt = 20;
   let windowSize = 15;
   let foreground = false;
@@ -279,7 +279,8 @@ Commands:
         }
         break;
       case "--budget":
-        budgetUsd = parseFloat(args[++i] ?? "1.00");
+        budgetUsd = parseFloat(args[++i] ?? "");
+        if (isNaN(budgetUsd)) budgetUsd = undefined;
         break;
       case "--compact-at":
         compactAt = parseInt(args[++i] ?? "20", 10);
@@ -315,6 +316,19 @@ Commands:
       `  Or:  snoot ${channel} --user <id>    (per-project)`
     );
     process.exit(1);
+  }
+
+  // Resolve budget: --budget flag > global ~/.snoot/config.json > no limit
+  if (budgetUsd === undefined) {
+    const globalConfigFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
+    if (existsSync(globalConfigFile)) {
+      try {
+        const globalConfig = JSON.parse(readFileSync(globalConfigFile, "utf-8"));
+        if (typeof globalConfig.budgetUsd === "number") {
+          budgetUsd = globalConfig.budgetUsd;
+        }
+      } catch {}
+    }
   }
 
   return {
@@ -452,7 +466,7 @@ async function main(): Promise<void> {
   console.log(`  Channel: ${config.channel}`);
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
-  console.log(`  Budget: $${config.budgetUsd.toFixed(2)}/process`);
+  console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
   console.log(`  Compact at: ${config.compactAt} pairs, window: ${config.windowSize}`);
 
   const proxy = createProxy(config);

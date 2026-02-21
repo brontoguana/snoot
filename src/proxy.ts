@@ -29,15 +29,9 @@ export function createProxy(config: Config) {
       } catch {}
     });
 
-    // Wire up process exit handler
+    // Wire up process exit handler (for logging/cleanup)
     claude.onExit(async () => {
       if (shuttingDown) return;
-
-      // Check if compaction is needed between bursts
-      if (context.needsCompaction()) {
-        console.log("[proxy] Compaction threshold reached, compacting...");
-        await context.compact();
-      }
     });
 
     sessionClient.startListening(onMessage);
@@ -135,15 +129,9 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // Regular message — send to Claude
-    if (claude.isAlive()) {
-      // Mid-burst injection: pipe directly to existing process
-      claude.send(text);
-    } else {
-      // New burst: build context prompt file, spawn fresh process
-      const promptFile = context.buildPrompt();
-      claude.send(text, promptFile);
-    }
+    // Regular message — build full context and spawn fresh process
+    const promptFile = context.buildPrompt();
+    claude.send(text, promptFile);
 
     // Send "thinking" indicators at 10s and 90s
     const thinkingTimer = setTimeout(async () => {
@@ -165,7 +153,7 @@ export function createProxy(config: Config) {
     // Empty response — tell the user instead of silently dropping
     if (!response) {
       console.log("[proxy] Claude returned empty response");
-      await sessionClient.send("Claude returned an empty response — it may have hit a limit. Try again or /kill to reset.");
+      await sessionClient.send("Claude returned an empty response — it may have hit a limit. Try again.");
       return;
     }
 
@@ -198,6 +186,12 @@ export function createProxy(config: Config) {
       timestamp: Date.now(),
     };
     await context.append(pair);
+
+    // Check if compaction is needed after recording the exchange
+    if (context.needsCompaction()) {
+      console.log("[proxy] Compaction threshold reached, compacting...");
+      await context.compact();
+    }
 
     // Send response to user via Session
     await sessionClient.send(response);
