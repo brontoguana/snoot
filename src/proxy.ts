@@ -22,6 +22,13 @@ export function createProxy(config: Config) {
     await context.load();
     sessionClient = await createSessionClient(config);
 
+    // Wire up rate limit notification
+    claude.onRateLimit(async (retryIn, attempt) => {
+      try {
+        await sessionClient.send(`⏳ Rate limited — retrying in ${retryIn}s (attempt ${attempt}/5)`);
+      } catch {}
+    });
+
     // Wire up process exit handler
     claude.onExit(async () => {
       if (shuttingDown) return;

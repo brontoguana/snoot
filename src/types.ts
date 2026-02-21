@@ -84,6 +84,7 @@ export interface ClaudeManager {
   waitForResponse(): Promise<string>;
   kill(): Promise<void>;
   onExit(cb: () => void): void;
+  onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
   getStatus(): ClaudeStatus;
 }
 

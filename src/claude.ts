@@ -1,10 +1,14 @@
 import type { Config, ClaudeManager, ClaudeStatus, StreamJsonOutput } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
+const RATE_LIMIT_RETRY_DELAY = 30_000; // 30 seconds
+const MAX_RATE_LIMIT_RETRIES = 5;
+
 export function createClaudeManager(config: Config): ClaudeManager {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let alive = false;
   let exitCallbacks: Array<() => void> = [];
+  let rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
   // Response queue: resolvers waiting for result messages
   let responseResolvers: Array<{
     resolve: (text: string) => void;
@@ -13,6 +17,9 @@ export function createClaudeManager(config: Config): ClaudeManager {
   let accumulatedText = "";
   let spawnedAt: number | null = null;
   let lastActivityAt: number | null = null;
+  let rateLimitDetected = false;
+  let lastUserMessage = "";
+  let rateLimitRetryCount = 0;
 
   function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
@@ -175,12 +182,58 @@ export function createClaudeManager(config: Config): ClaudeManager {
         }
         break;
       }
+      case "system": {
+        // Check for rate limit indicators
+        const raw = JSON.stringify(msg).toLowerCase();
+        if (raw.includes("rate") || raw.includes("limit") || raw.includes("throttl") || raw.includes("429") || raw.includes("overloaded")) {
+          rateLimitDetected = true;
+          console.log(`[claude] Rate limit detected: ${JSON.stringify(msg).slice(0, 200)}`);
+        } else {
+          console.log(`[claude] System message: ${JSON.stringify(msg).slice(0, 200)}`);
+        }
+        break;
+      }
       case "result": {
         // Response complete — resolve the oldest waiting promise
         const result = (msg as any).result as string;
         // Use the result text if available, otherwise use accumulated text
         const responseText = result || accumulatedText;
         accumulatedText = "";
+
+        // Rate limit retry: empty result + rate limit detected + retries left
+        if (!responseText && rateLimitDetected && rateLimitRetryCount < MAX_RATE_LIMIT_RETRIES && lastUserMessage) {
+          rateLimitRetryCount++;
+          rateLimitDetected = false;
+          console.log(`[claude] Rate limited — retrying in ${RATE_LIMIT_RETRY_DELAY / 1000}s (attempt ${rateLimitRetryCount}/${MAX_RATE_LIMIT_RETRIES})`);
+
+          // Notify proxy so it can tell the user
+          for (const cb of rateLimitCallbacks) {
+            cb(RATE_LIMIT_RETRY_DELAY / 1000, rateLimitRetryCount);
+          }
+
+          // Wait and resend — don't resolve the promise, keep it pending
+          setTimeout(() => {
+            if (!alive) return;
+            console.log(`[claude] Resending after rate limit (attempt ${rateLimitRetryCount})`);
+            const message = JSON.stringify({
+              type: "user",
+              message: { role: "user", content: lastUserMessage },
+            }) + "\n";
+            try {
+              const stdin = proc!.stdin as import("bun").FileSink;
+              stdin.write(message);
+              stdin.flush();
+            } catch (err) {
+              console.error("[claude] Error resending after rate limit:", err);
+              const resolver = responseResolvers.shift();
+              if (resolver) resolver.resolve("[Rate limited — retry failed]");
+            }
+          }, RATE_LIMIT_RETRY_DELAY);
+          break;
+        }
+
+        rateLimitDetected = false;
+        rateLimitRetryCount = 0;
 
         console.log(`[claude] Result received (${responseText.length} chars), resolvers waiting: ${responseResolvers.length}`);
         const resolver = responseResolvers.shift();
@@ -190,7 +243,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
         break;
       }
       default:
-        // system, stream_event, etc. — ignore
+        // stream_event, etc. — ignore
         break;
     }
   }
@@ -203,6 +256,9 @@ export function createClaudeManager(config: Config): ClaudeManager {
     if (!alive) {
       spawnProcess(promptFile);
     }
+
+    lastUserMessage = text;
+    rateLimitRetryCount = 0;
 
     const message = JSON.stringify({
       type: "user",
@@ -266,6 +322,10 @@ export function createClaudeManager(config: Config): ClaudeManager {
     exitCallbacks.push(cb);
   }
 
+  function onRateLimit(cb: (retryIn: number, attempt: number) => void): void {
+    rateLimitCallbacks.push(cb);
+  }
+
   function getStatus(): ClaudeStatus {
     return {
       alive,
@@ -275,5 +335,5 @@ export function createClaudeManager(config: Config): ClaudeManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onRateLimit, getStatus };
 }
