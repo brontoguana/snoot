@@ -64,17 +64,58 @@ export function createProxy(config: Config) {
     processing = true;
 
     while (messageQueue.length > 0) {
-      const text = messageQueue.shift()!;
-      try {
-        await handleMessage(text);
-      } catch (err) {
-        console.error("[proxy] Error handling message:", err);
+      // Drain all queued messages, separating commands from regular messages
+      const commands: string[] = [];
+      const regular: string[] = [];
+
+      while (messageQueue.length > 0) {
+        const text = messageQueue.shift()!;
+        const trimmed = text.trim();
+        // Check if it's a slash command (but not /profile which goes to Claude)
+        if (trimmed.startsWith("/") && !trimmed.match(/^\/profile\s+/i)) {
+          commands.push(text);
+        } else {
+          regular.push(text);
+        }
+      }
+
+      // Process commands first
+      for (const cmd of commands) {
         try {
-          await sessionClient.send(
-            `Error: ${err instanceof Error ? err.message : "Unknown error"}`
-          );
-        } catch {
-          console.error("[proxy] Failed to send error message");
+          await handleMessage(cmd);
+        } catch (err) {
+          console.error("[proxy] Error handling command:", err);
+          try {
+            await sessionClient.send(
+              `Error: ${err instanceof Error ? err.message : "Unknown error"}`
+            );
+          } catch {
+            console.error("[proxy] Failed to send error message");
+          }
+        }
+      }
+
+      // Batch regular messages into one Claude call
+      if (regular.length > 0) {
+        const batched = regular.length === 1
+          ? regular[0]
+          : regular.join("\n\n");
+
+        if (regular.length > 1) {
+          console.log(`[proxy] Batched ${regular.length} messages into one request`);
+        }
+
+        try {
+          await handleMessage(batched);
+        } catch (err) {
+          console.error("[proxy] Error handling message:", err);
+          try {
+            await sessionClient.send(
+              `Error: ${err instanceof Error ? err.message : "Unknown error"}`
+            );
+          } catch {
+            console.error("[proxy] Failed to send error message");
+          }
         }
       }
     }
