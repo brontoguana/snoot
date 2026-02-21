@@ -416,6 +416,13 @@ function redirectToLog(logFile: string): void {
 }
 
 async function main(): Promise<void> {
+  process.on("uncaughtException", (err) => {
+    console.error("[FATAL] Uncaught exception:", err);
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error("[FATAL] Unhandled rejection:", reason);
+  });
+
   // Check if we're the daemon child (re-spawned in background)
   const isDaemon = process.env.SNOOT_DAEMON === "1";
 

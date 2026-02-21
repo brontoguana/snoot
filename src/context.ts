@@ -10,7 +10,8 @@ Guidelines:
 - Format responses as plain text only. No markdown — no **, no ##, no \`backticks\`, no bullet markers like "- ". The messenger app renders everything as plain text so markdown syntax just looks like noise. Use line breaks and spacing for structure instead.
 - You have access to the user's codebase in the current working directory.
 - If context from earlier conversation is provided, use it naturally — don't call attention to "summaries" or "context windows."
-- If you don't know something from earlier conversation, just say so.`;
+- If you don't know something from earlier conversation, just say so.
+- When you want to show a table, diagram, chart, or any structured visual, embed an inline SVG directly in your response. The proxy will convert it to a PNG image and send it to the user. Use <svg xmlns="http://www.w3.org/2000/svg" ...>...</svg> with a self-contained design (no external fonts/images). Keep SVGs simple and readable at phone screen size. Use this for tables, comparisons, architecture diagrams, flowcharts, or anything that benefits from visual layout. Put any surrounding explanation as plain text before or after the SVG block.`;
 
 export function createContextStore(config: Config): ContextStore {
   const contextDir = `${config.baseDir}/context`;
@@ -60,12 +61,21 @@ export function createContextStore(config: Config): ContextStore {
     cleanOldArchives();
 
     if (existsSync(statePath)) {
-      state = JSON.parse(readFileSync(statePath, "utf-8"));
+      try {
+        state = JSON.parse(readFileSync(statePath, "utf-8"));
+      } catch (err) {
+        console.error("[context] Failed to parse state.json, using defaults:", err);
+      }
     }
 
     if (existsSync(recentPath)) {
-      const lines = readFileSync(recentPath, "utf-8").trim().split("\n").filter(Boolean);
-      recent = lines.map((line) => JSON.parse(line));
+      try {
+        const lines = readFileSync(recentPath, "utf-8").trim().split("\n").filter(Boolean);
+        recent = lines.map((line) => JSON.parse(line));
+      } catch (err) {
+        console.error("[context] Failed to parse recent.jsonl, using empty:", err);
+        recent = [];
+      }
     }
 
     if (existsSync(summaryPath)) {
@@ -202,20 +212,26 @@ ${input}`;
     const env = { ...process.env };
     delete env.CLAUDECODE;
 
-    const proc = Bun.spawn(
-      ["claude", "-p", "--model", "haiku", "--no-session-persistence"],
-      {
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-        env,
-      }
-    );
+    let proc;
+    try {
+      proc = Bun.spawn(
+        ["claude", "-p", "--model", "haiku", "--no-session-persistence"],
+        {
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+          env,
+        }
+      );
+    } catch (err) {
+      console.error("[context] Failed to spawn compaction process:", err);
+      throw err;
+    }
 
-    proc.stdin!.write(prompt);
-    proc.stdin!.end();
+    (proc.stdin as import("bun").FileSink).write(prompt);
+    (proc.stdin as import("bun").FileSink).end();
 
-    const output = await new Response(proc.stdout).text();
+    const output = await new Response(proc.stdout as ReadableStream).text();
     await proc.exited;
 
     return output.trim();

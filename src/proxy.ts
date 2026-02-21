@@ -6,7 +6,7 @@ import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
-import { buildProfilePrompt, convertAvatarSvg } from "./profile.js";
+import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks } from "./profile.js";
 
 function createLLM(config: Config): LLMManager {
   return config.backend === "gemini"
@@ -32,6 +32,33 @@ export function createProxy(config: Config) {
   ];
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
+
+  /** Send a response that may contain inline SVG blocks as images */
+  async function sendRichResponse(text: string): Promise<void> {
+    const segments = extractSvgBlocks(text);
+
+    // No SVGs found — send as plain text
+    if (segments.length === 1 && segments[0].type === "text") {
+      await sessionClient.send(segments[0].content);
+      return;
+    }
+    if (segments.length === 0) return;
+
+    for (const segment of segments) {
+      if (segment.type === "text") {
+        await sessionClient.send(segment.content);
+      } else {
+        try {
+          const png = svgToPng(segment.content);
+          await sessionClient.sendImage(png);
+          console.log(`[proxy] Sent inline SVG as PNG (${png.length} bytes)`);
+        } catch (err) {
+          console.error("[proxy] Failed to convert inline SVG:", err);
+          await sessionClient.send("[Image failed to render]");
+        }
+      }
+    }
+  }
 
   function wireLLMCallbacks(): void {
     llm.onRateLimit(async (retryIn, attempt) => {
@@ -69,7 +96,11 @@ export function createProxy(config: Config) {
   }
 
   async function start(): Promise<void> {
-    await context.load();
+    try {
+      await context.load();
+    } catch (err) {
+      console.error("[proxy] Failed to load context, starting fresh:", err);
+    }
     sessionClient = await createSessionClient(config);
 
     wireLLMCallbacks();
@@ -295,12 +326,13 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // Record the full exchange in context
+    // Record the exchange in context (strip SVGs to save space)
     const fullResponse = response || remainingChunks || "";
+    const contextResponse = fullResponse.replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]");
     const pair = {
       id: context.nextPairId(),
       user: text,
-      assistant: fullResponse,
+      assistant: contextResponse,
       timestamp: Date.now(),
     };
     await context.append(pair);
@@ -313,11 +345,11 @@ export function createProxy(config: Config) {
 
     // Send response to user — only what hasn't been streamed already
     if (chunksSent === 0) {
-      // Nothing was streamed — send the full response as before
-      await sessionClient.send(response);
+      // Nothing was streamed — send full response, extracting any SVG images
+      await sendRichResponse(response);
     } else if (remainingChunks.length > 0) {
-      // Some was streamed, send the remaining buffer
-      await sessionClient.send(remainingChunks);
+      // Some was streamed, send the remaining buffer with SVG extraction
+      await sendRichResponse(remainingChunks);
     }
     // If chunksSent > 0 and no remaining, everything was already delivered
   }

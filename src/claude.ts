@@ -56,13 +56,23 @@ export function createClaudeManager(config: Config): LLMManager {
     const env = { ...process.env };
     delete env.CLAUDECODE; // prevent nested session detection
 
-    proc = Bun.spawn(args, {
-      cwd: config.workDir,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env,
-    });
+    try {
+      proc = Bun.spawn(args, {
+        cwd: config.workDir,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      });
+    } catch (err) {
+      console.error("[claude] Failed to spawn process:", err);
+      const pending = responseResolvers;
+      responseResolvers = [];
+      for (const { resolve } of pending) {
+        resolve(`[Failed to start Claude: ${err instanceof Error ? err.message : err}]`);
+      }
+      return;
+    }
 
     alive = true;
     accumulatedText = "";

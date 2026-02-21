@@ -5,6 +5,23 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import type { Config, SessionClient } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 6000;
+const RETRY_DELAY = 30_000;
+
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const name = err?.constructor?.name ?? "";
+    const msg = err instanceof Error ? err.message : String(err);
+    // Retry once on network-level errors
+    if (name.includes("Fetch") || name.includes("Network") || msg.includes("fetch") || msg.includes("network")) {
+      console.error(`[session] ${label} failed (${name}), retrying in 30s...`);
+      await Bun.sleep(RETRY_DELAY);
+      return await fn();
+    }
+    throw err;
+  }
+}
 
 interface Identity {
   mnemonic: string;
@@ -86,10 +103,10 @@ export async function createSessionClient(config: Config): Promise<SessionClient
   async function send(text: string): Promise<void> {
     // Chunk long messages
     if (text.length <= MAX_MESSAGE_LENGTH) {
-      await session.sendMessage({
+      await withRetry(() => session.sendMessage({
         to: config.userSessionId,
         text,
-      });
+      }), "send");
       return;
     }
 
@@ -110,15 +127,24 @@ export async function createSessionClient(config: Config): Promise<SessionClient
 
     for (let i = 0; i < chunks.length; i++) {
       const prefix = chunks.length > 1 ? `[${i + 1}/${chunks.length}] ` : "";
-      await session.sendMessage({
+      await withRetry(() => session.sendMessage({
         to: config.userSessionId,
         text: prefix + chunks[i],
-      });
+      }), "send-chunk");
     }
   }
 
+  async function sendImage(png: Uint8Array, caption?: string): Promise<void> {
+    const file = new File([png.buffer as ArrayBuffer], "image.png", { type: "image/png" });
+    await withRetry(() => session.sendMessage({
+      to: config.userSessionId,
+      text: caption,
+      attachments: [file],
+    }), "sendImage");
+  }
+
   async function setAvatar(png: Uint8Array): Promise<void> {
-    await session.setAvatar(png);
+    await withRetry(() => session.setAvatar(png), "setAvatar");
     // Persist so avatar survives restarts
     const avatarCache = `${config.baseDir}/avatar.png`;
     writeFileSync(avatarCache, png);
@@ -129,5 +155,5 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     return identity.sessionId;
   }
 
-  return { startListening, send, setAvatar, getSessionId };
+  return { startListening, send, sendImage, setAvatar, getSessionId };
 }
