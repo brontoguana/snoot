@@ -71,8 +71,9 @@ export function createProxy(config: Config) {
     // Check for /commands
     const cmdResult = handleCommand(text, config, context, claude);
     if (cmdResult) {
-      // Handle /forget specially — reset context before sending response
-      if (text.trim().toLowerCase() === "/forget") {
+      // Handle /forget and /clear specially — reset context before sending response
+      const cmd = text.trim().toLowerCase();
+      if (cmd === "/forget" || cmd === "/clear") {
         if (claude.isAlive()) await claude.kill();
         await context.reset();
       } else {

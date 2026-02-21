@@ -26,7 +26,7 @@ export function handleCommand(
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
           "  /compact — force context compaction",
-          "  /forget — clear all context and restart",
+          "  /forget or /clear — clear all context and restart",
         ].join("\n"),
       };
 
@@ -118,6 +118,7 @@ export function handleCommand(
       };
 
     case "/forget":
+    case "/clear":
       return {
         response: "Context cleared. Starting fresh.",
         killProcess: true,
