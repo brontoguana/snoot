@@ -193,6 +193,11 @@ export function createClaudeManager(config: Config): ClaudeManager {
         }
         break;
       }
+      case "rate_limit_event": {
+        rateLimitDetected = true;
+        console.log(`[claude] Rate limit event: ${JSON.stringify(msg).slice(0, 300)}`);
+        break;
+      }
       case "result": {
         // Response complete — resolve the oldest waiting promise
         const result = (msg as any).result as string;

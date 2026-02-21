@@ -150,7 +150,7 @@ export function createProxy(config: Config) {
       if (claude.isAlive()) {
         try { await sessionClient.send("💭 thinking..."); } catch {}
       }
-    }, 10_000);
+    }, 5_000);
     const stillThinkingTimer = setTimeout(async () => {
       if (claude.isAlive()) {
         try { await sessionClient.send("💭 still thinking..."); } catch {}
@@ -162,8 +162,12 @@ export function createProxy(config: Config) {
     clearTimeout(thinkingTimer);
     clearTimeout(stillThinkingTimer);
 
-    // Skip empty responses (e.g. idle timeout with no pending work)
-    if (!response) return;
+    // Empty response — tell the user instead of silently dropping
+    if (!response) {
+      console.log("[proxy] Claude returned empty response");
+      await sessionClient.send("Claude returned an empty response — it may have hit a limit. Try again or /kill to reset.");
+      return;
+    }
 
     // If this was a /profile request, check for the SVG file and set avatar
     if (pendingAvatar) {
