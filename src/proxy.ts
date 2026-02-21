@@ -29,6 +29,11 @@ export function createProxy(config: Config) {
 
     sessionClient.startListening(onMessage);
     console.log(`[proxy] Ready. Mode: ${config.mode}`);
+
+    // Greet the user so the conversation appears in their Session app
+    await sessionClient.send(
+      `Snoot is online. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
+    );
   }
 
   function onMessage(text: string): void {
@@ -93,8 +98,21 @@ export function createProxy(config: Config) {
       claude.send(text, true, contextPrefix);
     }
 
+    // Send "thinking" indicator if response takes more than 60s
+    const thinkingTimer = setTimeout(async () => {
+      if (claude.isAlive()) {
+        try {
+          await sessionClient.send("[Claude is still thinking...]");
+        } catch {}
+      }
+    }, 60_000);
+
     // Wait for response
     const response = await claude.waitForResponse();
+    clearTimeout(thinkingTimer);
+
+    // Skip empty responses (e.g. idle timeout with no pending work)
+    if (!response) return;
 
     // Record the exchange
     const pair = {

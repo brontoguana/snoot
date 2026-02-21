@@ -30,7 +30,6 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     writeFileSync(identityFile, JSON.stringify(identity, null, 2));
     console.log(`Created identity for channel "${config.channel}"`);
     console.log(`Session ID: ${sessionId}`);
-    console.log(`Add this Session ID as a contact in your Session app.`);
   }
 
   const session = new Session();

@@ -57,6 +57,9 @@ export function createClaudeManager(config: Config): ClaudeManager {
     accumulatedText = "";
     resetIdleTimer();
 
+    console.log(`[claude] Spawned process (pid: ${proc.pid})`);
+    console.log(`[claude] Args: ${args.join(" ")}`);
+
     // Read stdout as NDJSON
     readOutputStream();
 
@@ -74,12 +77,19 @@ export function createClaudeManager(config: Config): ClaudeManager {
         console.log("[claude] Process exited normally");
       }
 
-      // Reject any pending response resolvers
+      // Resolve any pending response resolvers
       const pending = responseResolvers;
       responseResolvers = [];
       for (const { resolve } of pending) {
-        // Resolve with whatever we accumulated, even if incomplete
-        resolve(accumulatedText || "[No response from Claude]");
+        if (accumulatedText) {
+          // Partial response — send what we got
+          resolve(accumulatedText);
+        } else if (code !== 0) {
+          resolve(`[Claude process failed (exit code ${code})]`);
+        } else {
+          // Process exited cleanly but no response — idle timeout or empty result
+          resolve("");
+        }
       }
       accumulatedText = "";
 
@@ -153,6 +163,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
   }
 
   function handleOutputMessage(msg: StreamJsonOutput): void {
+    console.log(`[claude] Output message type: ${msg.type}`);
     switch (msg.type) {
       case "assistant": {
         // Complete assistant message — extract text content
@@ -161,6 +172,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
           for (const block of content) {
             if (block.type === "text" && block.text) {
               accumulatedText += block.text;
+              console.log(`[claude] Accumulated text: ${accumulatedText.slice(0, 100)}...`);
             }
           }
         }
@@ -173,6 +185,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
         const responseText = result || accumulatedText;
         accumulatedText = "";
 
+        console.log(`[claude] Result received (${responseText.length} chars), resolvers waiting: ${responseResolvers.length}`);
         const resolver = responseResolvers.shift();
         if (resolver) {
           resolver.resolve(responseText);
@@ -198,7 +211,10 @@ export function createClaudeManager(config: Config): ClaudeManager {
       ? contextPrefix + "\n\n---\n\n" + text
       : text;
 
-    const message = JSON.stringify({ type: "user_message", content }) + "\n";
+    const message = JSON.stringify({
+      type: "user",
+      message: { role: "user", content },
+    }) + "\n";
 
     try {
       const stdin = proc!.stdin as import("bun").FileSink;

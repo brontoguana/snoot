@@ -40,8 +40,8 @@ export interface ContextState {
 
 /** Input message sent to Claude via stdin */
 export interface StreamJsonUserMessage {
-  type: "user_message";
-  content: string;
+  type: "user";
+  message: { role: "user"; content: string };
 }
 
 /** Output: assistant message with complete content */
