@@ -1,11 +1,13 @@
 // -- Configuration --
 
 export type Mode = "chat" | "research" | "coding";
+export type Backend = "claude" | "gemini";
 
 export interface Config {
   channel: string;
   userSessionId: string;
   mode: Mode;
+  backend: Backend;
   budgetUsd?: number; // undefined = no budget limit
   compactAt: number; // trigger compaction when recent pairs exceed this
   windowSize: number; // keep this many pairs after compaction
@@ -63,16 +65,17 @@ export type StreamJsonOutput =
   | StreamJsonResult
   | { type: string; [key: string]: unknown };
 
-// -- Claude process --
+// -- LLM process --
 
-export interface ClaudeStatus {
+export interface LLMStatus {
   alive: boolean;
   busy: boolean; // has pending response resolvers
   spawnedAt: number | null; // timestamp when process was spawned
   lastActivityAt: number | null; // timestamp of last stdout message
+  backend: Backend;
 }
 
-export interface ClaudeManager {
+export interface LLMManager {
   isAlive(): boolean;
   send(text: string, promptFile?: string): void;
   waitForResponse(): Promise<string>;
@@ -80,8 +83,12 @@ export interface ClaudeManager {
   onExit(cb: () => void): void;
   onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
   onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void;
-  getStatus(): ClaudeStatus;
+  getStatus(): LLMStatus;
 }
+
+// Legacy aliases
+export type ClaudeStatus = LLMStatus;
+export type ClaudeManager = LLMManager;
 
 // -- Session --
 

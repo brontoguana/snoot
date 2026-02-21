@@ -4,7 +4,7 @@ import "@session.js/bun-network";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync } from "fs";
 import { resolve, dirname, basename } from "path";
 import { homedir } from "os";
-import type { Config, Mode } from "./types.js";
+import type { Config, Mode, Backend } from "./types.js";
 import { createProxy } from "./proxy.js";
 
 const SNOOT_SRC = import.meta.filename;
@@ -226,6 +226,7 @@ function parseArgs(): Config & { foreground: boolean } {
 Options:
   --user <session-id>   User's Session ID (overrides saved ID)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
+  --backend <backend>   LLM backend: claude, gemini (default: claude)
   --budget <usd>        Max budget per message in USD (no limit by default)
   --compact-at <n>      Trigger compaction at N message pairs (default: 20)
   --window <n>          Keep N pairs after compaction (default: 15)
@@ -261,6 +262,7 @@ Commands:
   const channel = args[0];
   let userSessionId = "";
   let mode: Mode = "coding";
+  let backend: Backend = "claude";
   let budgetUsd: number | undefined = undefined;
   let compactAt = 20;
   let windowSize = 15;
@@ -275,6 +277,13 @@ Commands:
         mode = (args[++i] ?? "coding") as Mode;
         if (!["chat", "research", "coding"].includes(mode)) {
           console.error(`Invalid mode: ${mode}. Choose: chat, research, coding`);
+          process.exit(1);
+        }
+        break;
+      case "--backend":
+        backend = (args[++i] ?? "claude") as Backend;
+        if (!["claude", "gemini"].includes(backend)) {
+          console.error(`Invalid backend: ${backend}. Choose: claude, gemini`);
           process.exit(1);
         }
         break;
@@ -335,6 +344,7 @@ Commands:
     channel,
     userSessionId,
     mode,
+    backend,
     budgetUsd,
     compactAt,
     windowSize,
@@ -464,6 +474,7 @@ async function main(): Promise<void> {
 
   console.log(`Snoot starting (pid ${process.pid})...`);
   console.log(`  Channel: ${config.channel}`);
+  console.log(`  Backend: ${config.backend}`);
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);

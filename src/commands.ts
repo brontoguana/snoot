@@ -1,4 +1,4 @@
-import type { Config, CommandResult, ContextStore, ClaudeManager, Mode } from "./types.js";
+import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
 
 const VALID_MODES: Mode[] = ["chat", "research", "coding"];
 
@@ -6,7 +6,7 @@ export function handleCommand(
   text: string,
   config: Config,
   context: ContextStore,
-  claude: ClaudeManager,
+  llm: LLMManager,
 ): CommandResult | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
@@ -20,10 +20,12 @@ export function handleCommand(
         response: [
           "Snoot commands:",
           "  /help — show this message",
-          "  /hi — check if Claude is busy and when it last did something",
+          "  /hi — check if LLM is busy and when it last did something",
           "  /status — show current state",
           "  /context — show summary and pins",
           `  /mode <chat|research|coding> — switch mode (current: ${config.mode})`,
+          `  /claude — switch to Claude backend`,
+          `  /gemini — switch to Gemini backend`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate and set avatar from description",
@@ -36,9 +38,10 @@ export function handleCommand(
 
     case "/hi":
     case "/update": {
-      const status = claude.getStatus();
+      const status = llm.getStatus();
+      const name = status.backend === "gemini" ? "Gemini" : "Claude";
       if (!status.alive) {
-        return { response: "Claude is idle. Send a message to start a new request." };
+        return { response: `${name} is idle. Send a message to start a new request.` };
       }
       const now = Date.now();
       const ago = (ts: number) => {
@@ -49,7 +52,7 @@ export function handleCommand(
         return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
       };
       const parts: string[] = [];
-      parts.push("Claude is processing a request.");
+      parts.push(`${name} is processing a request.`);
       if (status.spawnedAt) {
         parts.push(`Started: ${ago(status.spawnedAt)}`);
       }
@@ -61,10 +64,12 @@ export function handleCommand(
 
     case "/status": {
       const state = context.getState();
+      const statusName = config.backend === "gemini" ? "Gemini" : "Claude";
       return {
         response: [
+          `Backend: ${config.backend}`,
           `Mode: ${config.mode}`,
-          `Claude: ${claude.isAlive() ? "processing" : "idle"}`,
+          `${statusName}: ${llm.isAlive() ? "processing" : "idle"}`,
           `Messages: ${state.totalPairs} total, ${context.getRecent().length} in window`,
           `Pins: ${state.pins.length}`,
           `Compaction at: ${config.compactAt} messages`,
@@ -140,8 +145,8 @@ export function handleCommand(
     }
 
     case "/kill":
-      if (!claude.isAlive()) {
-        return { response: "Nothing to cancel — Claude is idle." };
+      if (!llm.isAlive()) {
+        return { response: "Nothing to cancel — idle." };
       }
       return {
         response: "Request cancelled.",

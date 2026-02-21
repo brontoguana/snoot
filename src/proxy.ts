@@ -1,15 +1,22 @@
 import { join } from "path";
 import { existsSync } from "fs";
-import type { Config } from "./types.js";
+import type { Config, LLMManager, Backend } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
+import { createGeminiManager } from "./gemini.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
 import { buildProfilePrompt, convertAvatarSvg } from "./profile.js";
 
+function createLLM(config: Config): LLMManager {
+  return config.backend === "gemini"
+    ? createGeminiManager(config)
+    : createClaudeManager(config);
+}
+
 export function createProxy(config: Config) {
   const context = createContextStore(config);
-  const claude = createClaudeManager(config);
+  let llm: LLMManager = createLLM(config);
   let sessionClient: Awaited<ReturnType<typeof createSessionClient>>;
   let processing = false;
   let messageQueue: string[] = [];
@@ -18,19 +25,14 @@ export function createProxy(config: Config) {
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
 
-  async function start(): Promise<void> {
-    await context.load();
-    sessionClient = await createSessionClient(config);
-
-    // Wire up rate limit notification
-    claude.onRateLimit(async (retryIn, attempt) => {
+  function wireLLMCallbacks(): void {
+    llm.onRateLimit(async (retryIn, attempt) => {
       try {
         await sessionClient.send(`⏳ Rate limited — retrying in ${retryIn}s (attempt ${attempt}/5)`);
       } catch {}
     });
 
-    // Wire up API error retry notification
-    claude.onApiError(async (retryIn, attempt, maxAttempts) => {
+    llm.onApiError(async (retryIn, attempt, maxAttempts) => {
       try {
         if (attempt <= maxAttempts) {
           await sessionClient.send(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
@@ -38,25 +40,50 @@ export function createProxy(config: Config) {
       } catch {}
     });
 
-    // Wire up process exit handler (for logging/cleanup)
-    claude.onExit(async () => {
+    llm.onExit(async () => {
       if (shuttingDown) return;
     });
+  }
+
+  async function switchBackend(backend: Backend): Promise<string> {
+    if (config.backend === backend) {
+      return `Already using ${backend}.`;
+    }
+    if (llm.isAlive()) await llm.kill();
+    config.backend = backend;
+    llm = createLLM(config);
+    wireLLMCallbacks();
+    return `Switched to ${backend}. Next message will use ${backend}.`;
+  }
+
+  async function start(): Promise<void> {
+    await context.load();
+    sessionClient = await createSessionClient(config);
+
+    wireLLMCallbacks();
 
     sessionClient.startListening(onMessage);
-    console.log(`[proxy] Ready. Mode: ${config.mode}`);
+    console.log(`[proxy] Ready. Mode: ${config.mode}, Backend: ${config.backend}`);
 
     // Greet the user so the conversation appears in their Session app
     await sessionClient.send(
-      `Snoot is online. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
+      `Snoot is online. Backend: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
     );
   }
 
   function onMessage(text: string): void {
-    // /hi and /update bypass the queue so they respond even while Claude is busy
     const trimmed = text.trim().toLowerCase();
+
+    // /claude and /gemini — switch backend (bypass queue)
+    if (trimmed === "/claude" || trimmed === "/gemini") {
+      const backend = trimmed.slice(1) as Backend;
+      switchBackend(backend).then(msg => sessionClient.send(msg).catch(() => {}));
+      return;
+    }
+
+    // /hi and /update bypass the queue so they respond even while LLM is busy
     if (trimmed === "/hi" || trimmed === "/update") {
-      const cmdResult = handleCommand(text, config, context, claude);
+      const cmdResult = handleCommand(text, config, context, llm);
       if (cmdResult) {
         sessionClient.send(cmdResult.response).catch(() => {});
       }
@@ -104,7 +131,7 @@ export function createProxy(config: Config) {
         }
       }
 
-      // Batch regular messages into one Claude call
+      // Batch regular messages into one LLM call
       if (regular.length > 0) {
         const batched = regular.length === 1
           ? regular[0]
@@ -145,16 +172,16 @@ export function createProxy(config: Config) {
     }
 
     // Check for /commands
-    const cmdResult = handleCommand(text, config, context, claude);
+    const cmdResult = handleCommand(text, config, context, llm);
     if (cmdResult) {
       // Handle /forget and /clear specially — reset context before sending response
       const cmd = text.trim().toLowerCase();
       if (cmd === "/forget" || cmd === "/clear") {
-        if (claude.isAlive()) await claude.kill();
+        if (llm.isAlive()) await llm.kill();
         await context.reset();
       } else {
         if (cmdResult.restartProcess) {
-          if (claude.isAlive()) await claude.kill();
+          if (llm.isAlive()) await llm.kill();
           await sessionClient.send(cmdResult.response);
           // Re-exec with same args — new process acquires the lock
           Bun.spawn(process.argv, {
@@ -167,8 +194,8 @@ export function createProxy(config: Config) {
           process.exit(0);
           return;
         }
-        if (cmdResult.killProcess && claude.isAlive()) {
-          await claude.kill();
+        if (cmdResult.killProcess && llm.isAlive()) {
+          await llm.kill();
         }
         if (cmdResult.triggerCompaction) {
           await context.compact();
@@ -181,29 +208,30 @@ export function createProxy(config: Config) {
 
     // Regular message — build full context and spawn fresh process
     const promptFile = context.buildPrompt();
-    claude.send(text, promptFile);
+    llm.send(text, promptFile);
 
-    // Send "thinking" indicators at 10s and 90s
+    // Send "thinking" indicators
+    const backendName = config.backend === "gemini" ? "Gemini" : "Claude";
     const thinkingTimer = setTimeout(async () => {
-      if (claude.isAlive()) {
+      if (llm.isAlive()) {
         try { await sessionClient.send("💭 thinking..."); } catch {}
       }
     }, 5_000);
     const stillThinkingTimer = setTimeout(async () => {
-      if (claude.isAlive()) {
+      if (llm.isAlive()) {
         try { await sessionClient.send("💭 still thinking..."); } catch {}
       }
     }, 90_000);
 
     // Wait for response
-    const response = await claude.waitForResponse();
+    const response = await llm.waitForResponse();
     clearTimeout(thinkingTimer);
     clearTimeout(stillThinkingTimer);
 
     // Empty response — tell the user instead of silently dropping
     if (!response) {
-      console.log("[proxy] Claude returned empty response");
-      await sessionClient.send("Claude returned an empty response — it may have hit a limit. Try again.");
+      console.log(`[proxy] ${backendName} returned empty response`);
+      await sessionClient.send(`${backendName} returned an empty response — it may have hit a limit. Try again.`);
       return;
     }
 
@@ -251,8 +279,8 @@ export function createProxy(config: Config) {
     shuttingDown = true;
     console.log("\n[proxy] Shutting down...");
 
-    if (claude.isAlive()) {
-      await claude.kill();
+    if (llm.isAlive()) {
+      await llm.kill();
     }
 
     console.log("[proxy] Goodbye.");

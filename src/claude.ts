@@ -1,11 +1,11 @@
-import type { Config, ClaudeManager, ClaudeStatus, StreamJsonOutput } from "./types.js";
+import type { Config, LLMManager, LLMStatus, StreamJsonOutput } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
 const RATE_LIMIT_RETRY_DELAY = 30_000; // 30 seconds
 const MAX_RATE_LIMIT_RETRIES = 5;
 const API_ERROR_RETRY_DELAYS = [30_000, 60_000]; // 30s, then 60s, then give up
 
-export function createClaudeManager(config: Config): ClaudeManager {
+export function createClaudeManager(config: Config): LLMManager {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let alive = false;
   let exitCallbacks: Array<() => void> = [];
@@ -395,12 +395,13 @@ export function createClaudeManager(config: Config): ClaudeManager {
     apiErrorCallbacks.push(cb);
   }
 
-  function getStatus(): ClaudeStatus {
+  function getStatus(): LLMStatus {
     return {
       alive,
       busy: responseResolvers.length > 0,
       spawnedAt,
       lastActivityAt,
+      backend: "claude",
     };
   }
 
