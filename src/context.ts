@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync } from "fs";
 import type { Config, ContextStore, ContextState, MessagePair, PinnedItem } from "./types.js";
+
+const ARCHIVE_RETENTION_DAYS = 30;
 
 const SYSTEM_PROMPT = `You are Claude, an AI assistant accessed via Session encrypted messenger. The user is chatting with you from their phone through a proxy called Snoot.
 
@@ -11,17 +13,50 @@ Guidelines:
 
 export function createContextStore(config: Config): ContextStore {
   const contextDir = `${config.baseDir}/context`;
-  const archivePath = `${contextDir}/archive.jsonl`;
+  const archiveDir = `${contextDir}/archive`;
   const recentPath = `${contextDir}/recent.jsonl`;
   const summaryPath = `${contextDir}/summary.md`;
   const statePath = `${contextDir}/state.json`;
+
+  function todayArchivePath(): string {
+    const d = new Date();
+    const date = d.toISOString().slice(0, 10); // YYYY-MM-DD
+    return `${archiveDir}/archive-${date}.jsonl`;
+  }
+
+  function cleanOldArchives(): void {
+    if (!existsSync(archiveDir)) return;
+    const cutoff = Date.now() - ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    for (const file of readdirSync(archiveDir)) {
+      const match = file.match(/^archive-(\d{4}-\d{2}-\d{2})\.jsonl$/);
+      if (!match) continue;
+      const fileDate = new Date(match[1] + "T00:00:00Z").getTime();
+      if (fileDate < cutoff) {
+        unlinkSync(`${archiveDir}/${file}`);
+        console.log(`[context] Deleted old archive: ${file}`);
+      }
+    }
+  }
 
   let state: ContextState = { nextId: 1, totalPairs: 0, pins: [] };
   let recent: MessagePair[] = [];
   let summary = "";
 
   async function load(): Promise<void> {
-    mkdirSync(contextDir, { recursive: true });
+    mkdirSync(archiveDir, { recursive: true });
+
+    // Migrate legacy single archive file to daily format
+    const legacyArchive = `${contextDir}/archive.jsonl`;
+    if (existsSync(legacyArchive)) {
+      const content = readFileSync(legacyArchive, "utf-8").trim();
+      if (content) {
+        appendFileSync(todayArchivePath(), content + "\n");
+      }
+      unlinkSync(legacyArchive);
+      console.log("[context] Migrated legacy archive.jsonl to daily format");
+    }
+
+    cleanOldArchives();
 
     if (existsSync(statePath)) {
       state = JSON.parse(readFileSync(statePath, "utf-8"));
@@ -50,8 +85,8 @@ export function createContextStore(config: Config): ContextStore {
     recent.push(pair);
     state.totalPairs++;
 
-    // Append to archive (append-only)
-    appendFileSync(archivePath, JSON.stringify(pair) + "\n");
+    // Append to daily archive
+    appendFileSync(todayArchivePath(), JSON.stringify(pair) + "\n");
 
     // Rewrite recent
     saveRecent();
