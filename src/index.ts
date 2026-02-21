@@ -9,50 +9,83 @@ import { createProxy } from "./proxy.js";
 
 const SNOOT_SRC = import.meta.filename;
 const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
+const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
 
-function killByPidFile(pidFile: string): boolean {
-  if (!existsSync(pidFile)) return false;
-  const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-  if (isNaN(pid)) return false;
-  try {
-    process.kill(pid, 0); // test if alive
-    console.log(`Stopping snoot process (pid ${pid})...`);
-    process.kill(pid, "SIGTERM");
-    Bun.sleepSync(500);
-    try { process.kill(pid, "SIGKILL"); } catch {}
-    try { unlinkSync(pidFile); } catch {}
-    return true;
-  } catch {
-    // Stale PID file
-    try { unlinkSync(pidFile); } catch {}
+interface InstanceInfo {
+  channel: string;
+  pid: number;
+  cwd: string;
+  project: string;
+  args: string[];
+  startedAt: string;
+}
+
+function registerInstance(channel: string, cwd: string, args: string[]): void {
+  mkdirSync(INSTANCES_DIR, { recursive: true });
+  const info: InstanceInfo = {
+    channel,
+    pid: process.pid,
+    cwd,
+    project: cwd.split("/").pop() ?? cwd,
+    args,
+    startedAt: new Date().toISOString(),
+  };
+  writeFileSync(resolve(INSTANCES_DIR, `${channel}.json`), JSON.stringify(info, null, 2));
+}
+
+function unregisterInstance(channel: string): void {
+  try { unlinkSync(resolve(INSTANCES_DIR, `${channel}.json`)); } catch {}
+}
+
+function loadInstances(): InstanceInfo[] {
+  if (!existsSync(INSTANCES_DIR)) return [];
+  const instances: InstanceInfo[] = [];
+  for (const entry of readdirSync(INSTANCES_DIR)) {
+    if (!entry.endsWith(".json")) continue;
+    try {
+      const data = JSON.parse(readFileSync(resolve(INSTANCES_DIR, entry), "utf-8")) as InstanceInfo;
+      instances.push(data);
+    } catch {}
+  }
+  return instances;
+}
+
+function isAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+
+function killInstance(inst: InstanceInfo): boolean {
+  if (!isAlive(inst.pid)) {
+    unregisterInstance(inst.channel);
     return false;
   }
+  console.log(`Stopping snoot "${inst.channel}" (pid ${inst.pid})...`);
+  try { process.kill(inst.pid, "SIGTERM"); } catch {}
+  Bun.sleepSync(500);
+  try { process.kill(inst.pid, "SIGKILL"); } catch {}
+  unregisterInstance(inst.channel);
+  // Also clean up PID file in the project dir
+  try { unlinkSync(resolve(inst.cwd, `.snoot/${inst.channel}/snoot.pid`)); } catch {}
+  return true;
 }
 
 function handleShutdown(channel?: string): never {
-  const snootDir = resolve(".snoot");
-  if (!existsSync(snootDir)) {
-    console.log("No .snoot directory found — nothing to shut down.");
-    process.exit(0);
-  }
+  const instances = loadInstances();
 
   if (channel) {
-    const pidFile = resolve(snootDir, channel, "snoot.pid");
-    if (killByPidFile(pidFile)) {
+    const inst = instances.find(i => i.channel === channel);
+    if (inst && killInstance(inst)) {
       console.log(`Snoot stopped for channel "${channel}".`);
     } else {
       console.log(`No running snoot found for channel "${channel}".`);
     }
   } else {
-    // Kill all channels
     let killed = 0;
-    for (const entry of readdirSync(snootDir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        const pidFile = resolve(snootDir, entry.name, "snoot.pid");
-        if (killByPidFile(pidFile)) {
-          console.log(`  Stopped channel "${entry.name}".`);
-          killed++;
-        }
+    for (const inst of instances) {
+      if (killInstance(inst)) {
+        console.log(`  Stopped channel "${inst.channel}".`);
+        killed++;
       }
     }
     if (killed === 0) {
@@ -78,64 +111,56 @@ function handleSetUser(args: string[]): never {
   process.exit(0);
 }
 
-function handleRestart(args: string[]): never {
-  const snootDir = resolve(".snoot");
-  const channel = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
+function handlePs(): never {
+  const instances = loadInstances();
 
-  if (!existsSync(snootDir)) {
-    console.log("No .snoot directory found — nothing to restart.");
-    process.exit(1);
+  if (instances.length === 0) {
+    console.log("No snoot instances found.");
+    process.exit(0);
   }
 
-  // Find channels to restart
-  const channels: string[] = [];
-  if (channel) {
-    channels.push(channel);
-  } else {
-    // Find all channels with a running process
-    for (const entry of readdirSync(snootDir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        const pidFile = resolve(snootDir, entry.name, "snoot.pid");
-        if (existsSync(pidFile)) {
-          const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-          try {
-            process.kill(pid, 0);
-            channels.push(entry.name);
-          } catch {
-            // Stale PID
-          }
-        }
-      }
+  let found = 0;
+  for (const inst of instances) {
+    const alive = isAlive(inst.pid);
+    if (!alive) {
+      // Clean up stale registry entry
+      unregisterInstance(inst.channel);
+      continue;
     }
+    const status = `running (pid ${inst.pid})`;
+    console.log(`  ${inst.channel}  ${status}  ${inst.project}  ${inst.cwd}`);
+    found++;
   }
 
-  if (channels.length === 0) {
+  if (found === 0) {
+    console.log("No running snoot instances found.");
+  }
+  process.exit(0);
+}
+
+function handleRestart(args: string[]): never {
+  const channel = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
+  const instances = loadInstances();
+
+  // Find instances to restart
+  const toRestart = channel
+    ? instances.filter(i => i.channel === channel)
+    : instances.filter(i => isAlive(i.pid));
+
+  if (toRestart.length === 0) {
     console.log("No running snoot instances found to restart.");
     process.exit(1);
   }
 
-  for (const ch of channels) {
-    const launchFile = resolve(snootDir, ch, "launch.json");
-    const pidFile = resolve(snootDir, ch, "snoot.pid");
-
-    // Read saved launch args
-    let launchArgs: string[] = [ch];
-    if (existsSync(launchFile)) {
-      try {
-        const data = JSON.parse(readFileSync(launchFile, "utf-8"));
-        if (Array.isArray(data.args)) launchArgs = data.args;
-      } catch {}
-    }
-
+  for (const inst of toRestart) {
     // Kill existing
-    killByPidFile(pidFile);
+    killInstance(inst);
 
-    // Re-launch with saved args
-    console.log(`Restarting channel "${ch}" with args: ${launchArgs.join(" ")}`);
+    // Re-launch with saved args from registry
+    const launchArgs = inst.args.length > 0 ? inst.args : [inst.channel];
+    console.log(`Restarting channel "${inst.channel}" with args: ${launchArgs.join(" ")}`);
     const child = Bun.spawn(["bun", SNOOT_SRC, ...launchArgs], {
-      cwd: existsSync(resolve(snootDir, ch, "launch.json"))
-        ? JSON.parse(readFileSync(resolve(snootDir, ch, "launch.json"), "utf-8")).cwd ?? process.cwd()
-        : process.cwd(),
+      cwd: inst.cwd,
       env: process.env,
       stdout: "ignore",
       stderr: "ignore",
@@ -175,6 +200,7 @@ function parseArgs(): Config & { foreground: boolean } {
     console.log(`Usage: snoot <channel> [options]
        snoot shutdown [channel]
        snoot restart [channel]
+       snoot ps
        snoot set-user <session-id>
 
 Options:
@@ -188,6 +214,7 @@ Options:
 Commands:
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
   restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
+  ps                    List all snoot instances, their status, and project directories.
   set-user <session-id> Save your Session ID globally (~/.snoot/user.json).
 `);
     process.exit(0);
@@ -200,6 +227,10 @@ Commands:
 
   if (args[0] === "set-user") {
     handleSetUser(args.slice(1));
+  }
+
+  if (args[0] === "ps") {
+    handlePs();
   }
 
   // "restart" — kill existing then re-launch with saved args
@@ -279,7 +310,7 @@ Commands:
   };
 }
 
-function acquireLock(baseDir: string): void {
+function acquireLock(baseDir: string, channel: string): void {
   const lockFile = `${baseDir}/snoot.pid`;
   mkdirSync(baseDir, { recursive: true });
 
@@ -307,6 +338,7 @@ function acquireLock(baseDir: string): void {
   // Clean up on exit
   const cleanup = () => {
     try { unlinkSync(lockFile); } catch {}
+    unregisterInstance(channel);
   };
   process.on("exit", cleanup);
   process.on("SIGINT", cleanup);
@@ -384,7 +416,7 @@ async function main(): Promise<void> {
     redirectToLog(logFile);
   }
 
-  acquireLock(config.baseDir);
+  acquireLock(config.baseDir, config.channel);
 
   // Save launch args so "snoot restart" can re-launch with same config
   const launchArgs = process.argv.slice(2).filter(a => a !== "restart");
@@ -392,6 +424,9 @@ async function main(): Promise<void> {
     `${config.baseDir}/launch.json`,
     JSON.stringify({ args: launchArgs, cwd: process.cwd() })
   );
+
+  // Register in global registry
+  registerInstance(config.channel, process.cwd(), launchArgs);
 
   console.log(`Snoot starting (pid ${process.pid})...`);
   console.log(`  Channel: ${config.channel}`);
