@@ -43,22 +43,35 @@ chmod +x ~/.local/bin/snoot
 snoot <channel> [options]
 snoot shutdown [channel]
 snoot restart <channel> [options]
+snoot set-user <session-id>
 ```
+
+### First-time setup
+
+```bash
+# Save your Session ID globally (once)
+snoot set-user 05abc123...
+```
+
+This saves to `~/.snoot/user.json` and is used for all projects unless overridden with `--user`.
 
 ### Starting a channel
 
 ```bash
-# First run — must provide your Session ID
-snoot mychannel --user 05abc123...
-
-# Subsequent runs — user ID is remembered
+# Start snoot (runs in background, logs to .snoot/<channel>/snoot.log)
 snoot mychannel
 
 # With options
 snoot mychannel --mode research --budget 2.00 --timeout 120
+
+# Run in foreground (for debugging)
+snoot mychannel --fg
+
+# Override user for this project
+snoot mychannel --user 05def456...
 ```
 
-Run this from the project directory you want Claude to work on.
+Run this from the project directory you want Claude to work on. Snoot daemonizes by default — it verifies startup, then detaches and logs to `.snoot/<channel>/snoot.log`.
 
 ### Stopping
 
@@ -81,12 +94,13 @@ snoot restart mychannel --mode chat --budget 0.50
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--user <session-id>` | User's Session ID (required on first run, saved after) | — |
+| `--user <session-id>` | User's Session ID (overrides saved ID) | — |
 | `--mode <mode>` | Tool mode: `chat`, `research`, or `coding` | `coding` |
 | `--timeout <seconds>` | Idle timeout before killing Claude process | `90` |
 | `--budget <usd>` | Max budget per Claude process in USD | `1.00` |
 | `--compact-at <n>` | Trigger compaction at N message pairs | `20` |
 | `--window <n>` | Keep N pairs after compaction | `15` |
+| `--fg` | Run in foreground instead of daemonizing | off |
 
 ### Modes
 

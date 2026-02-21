@@ -105,9 +105,13 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     }
   }
 
+  async function setAvatar(png: Uint8Array): Promise<void> {
+    await session.setAvatar(png);
+  }
+
   function getSessionId(): string {
     return identity.sessionId;
   }
 
-  return { startListening, send, getSessionId };
+  return { startListening, send, setAvatar, getSessionId };
 }

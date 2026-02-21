@@ -25,6 +25,7 @@ export function handleCommand(
           `  /mode <chat|research|coding> — switch mode (current: ${config.mode})`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
+          "  /profile <description> — generate and set avatar from description",
           "  /compact — force context compaction",
           "  /forget or /clear — clear all context and restart",
         ].join("\n"),

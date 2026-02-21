@@ -85,6 +85,7 @@ export interface ClaudeManager {
 export interface SessionClient {
   startListening(onMessage: (text: string) => void): void;
   send(text: string): Promise<void>;
+  setAvatar(png: Uint8Array): Promise<void>;
   getSessionId(): string;
 }
 

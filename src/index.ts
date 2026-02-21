@@ -1,10 +1,14 @@
 #!/usr/bin/env bun
 
 import "@session.js/bun-network";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync } from "fs";
-import { resolve } from "path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync } from "fs";
+import { resolve, dirname } from "path";
+import { homedir } from "os";
 import type { Config, Mode } from "./types.js";
 import { createProxy } from "./proxy.js";
+
+const SNOOT_SRC = import.meta.filename;
+const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
 
 function killByPidFile(pidFile: string): boolean {
   if (!existsSync(pidFile)) return false;
@@ -60,25 +64,63 @@ function handleShutdown(channel?: string): never {
   process.exit(0);
 }
 
-function parseArgs(): Config {
+function handleSetUser(args: string[]): never {
+  const sessionId = args[0];
+  if (!sessionId) {
+    console.error("Usage: snoot set-user <session-id>");
+    process.exit(1);
+  }
+
+  mkdirSync(GLOBAL_SNOOT_DIR, { recursive: true });
+  const userFile = resolve(GLOBAL_SNOOT_DIR, "user.json");
+  writeFileSync(userFile, JSON.stringify({ sessionId }));
+  console.log(`Global user Session ID saved to ${userFile}`);
+  process.exit(0);
+}
+
+function resolveUserSessionId(userSessionId: string, baseDir: string): string {
+  // 1. CLI --user flag (highest priority)
+  if (userSessionId) return userSessionId;
+
+  // 2. Project-local user.json
+  const localUserFile = `${baseDir}/user.json`;
+  if (existsSync(localUserFile)) {
+    const data = JSON.parse(readFileSync(localUserFile, "utf-8"));
+    if (data.sessionId) return data.sessionId;
+  }
+
+  // 3. Global ~/.snoot/user.json
+  const globalUserFile = resolve(GLOBAL_SNOOT_DIR, "user.json");
+  if (existsSync(globalUserFile)) {
+    const data = JSON.parse(readFileSync(globalUserFile, "utf-8"));
+    if (data.sessionId) return data.sessionId;
+  }
+
+  return "";
+}
+
+function parseArgs(): Config & { foreground: boolean } {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
        snoot shutdown [channel]
        snoot restart <channel> [options]
+       snoot set-user <session-id>
 
 Options:
-  --user <session-id>   User's Session ID (required on first run)
+  --user <session-id>   User's Session ID (overrides saved ID)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
   --timeout <seconds>   Idle timeout before killing Claude process (default: 90)
   --budget <usd>        Max budget per Claude process in USD (default: 1.00)
   --compact-at <n>      Trigger compaction at N message pairs (default: 20)
   --window <n>          Keep N pairs after compaction (default: 15)
+  --fg                  Run in foreground instead of daemonizing
 
 Commands:
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
   restart <channel>     Stop and restart a channel (same as starting with new options).
+  set-user <session-id> Save your Session ID globally (~/.snoot/user.json).
 `);
     process.exit(0);
   }
@@ -86,6 +128,10 @@ Commands:
   // Handle subcommands
   if (args[0] === "shutdown") {
     handleShutdown(args[1]);
+  }
+
+  if (args[0] === "set-user") {
+    handleSetUser(args.slice(1));
   }
 
   // "restart" just means kill existing then start — acquireLock handles the kill,
@@ -106,6 +152,7 @@ Commands:
   let budgetUsd = 1.0;
   let compactAt = 20;
   let windowSize = 15;
+  let foreground = false;
 
   for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
@@ -131,6 +178,9 @@ Commands:
       case "--window":
         windowSize = parseInt(args[++i] ?? "15", 10);
         break;
+      case "--fg":
+        foreground = true;
+        break;
       default:
         console.error(`Unknown option: ${args[i]}`);
         process.exit(1);
@@ -139,18 +189,21 @@ Commands:
 
   // Resolve base directory
   const baseDir = resolve(`.snoot/${channel}`);
-  const userFile = `${baseDir}/user.json`;
 
-  // Load or save user Session ID
-  if (userSessionId) {
+  // Resolve user Session ID: --user > local > global
+  userSessionId = resolveUserSessionId(userSessionId, baseDir);
+
+  // Save to project-local if provided via --user
+  if (userSessionId && args.some((a, i) => a === "--user" && args[i + 1])) {
     mkdirSync(baseDir, { recursive: true });
-    writeFileSync(userFile, JSON.stringify({ sessionId: userSessionId }));
-  } else if (existsSync(userFile)) {
-    const data = JSON.parse(readFileSync(userFile, "utf-8"));
-    userSessionId = data.sessionId;
-  } else {
+    writeFileSync(`${baseDir}/user.json`, JSON.stringify({ sessionId: userSessionId }));
+  }
+
+  if (!userSessionId) {
     console.error(
-      `No user Session ID configured. Run with --user <session-id> on first use.`
+      `No user Session ID configured.\n` +
+      `  Run: snoot set-user <session-id>     (global)\n` +
+      `  Or:  snoot ${channel} --user <id>    (per-project)`
     );
     process.exit(1);
   }
@@ -165,6 +218,7 @@ Commands:
     windowSize,
     baseDir,
     workDir: process.cwd(),
+    foreground,
   };
 }
 
@@ -202,8 +256,77 @@ function acquireLock(baseDir: string): void {
   process.on("SIGTERM", cleanup);
 }
 
+function redirectToLog(logFile: string): void {
+  const fd = openSync(logFile, "a");
+  const write = (data: string | Uint8Array) => {
+    const str = typeof data === "string" ? data : new TextDecoder().decode(data);
+    appendFileSync(fd, str);
+    return true;
+  };
+
+  // Override console methods
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+
+  const timestamp = () => new Date().toISOString();
+
+  console.log = (...args: any[]) => {
+    write(`[${timestamp()}] ${args.map(String).join(" ")}\n`);
+  };
+  console.error = (...args: any[]) => {
+    write(`[${timestamp()}] ERROR: ${args.map(String).join(" ")}\n`);
+  };
+  console.warn = (...args: any[]) => {
+    write(`[${timestamp()}] WARN: ${args.map(String).join(" ")}\n`);
+  };
+}
+
 async function main(): Promise<void> {
+  // Check if we're the daemon child (re-spawned in background)
+  const isDaemon = process.env.SNOOT_DAEMON === "1";
+
   const config = parseArgs();
+
+  // If not --fg and not already the daemon, spawn ourselves in the background
+  if (!config.foreground && !isDaemon) {
+    const logFile = resolve(`.snoot/${config.channel}/snoot.log`);
+    mkdirSync(dirname(logFile), { recursive: true });
+
+    const logFd = openSync(logFile, "a");
+
+    const child = Bun.spawn(["bun", SNOOT_SRC, ...process.argv.slice(2)], {
+      cwd: process.cwd(),
+      env: { ...process.env, SNOOT_DAEMON: "1" },
+      stdout: logFd,
+      stderr: logFd,
+      stdin: "ignore",
+    });
+
+    // Detach from parent — unref so parent can exit
+    child.unref();
+
+    // Brief pause to check it didn't die immediately
+    await Bun.sleep(1500);
+
+    try {
+      process.kill(child.pid, 0); // test if alive
+      console.log(`Snoot started in background (pid ${child.pid})`);
+      console.log(`  Channel: ${config.channel}`);
+      console.log(`  Log: ${logFile}`);
+      process.exit(0);
+    } catch {
+      console.error(`Snoot failed to start. Check ${logFile} for details.`);
+      process.exit(1);
+    }
+  }
+
+  // We're either in foreground mode or the daemon child
+  if (isDaemon) {
+    const logFile = resolve(`.snoot/${config.channel}/snoot.log`);
+    redirectToLog(logFile);
+  }
+
   acquireLock(config.baseDir);
 
   console.log(`Snoot starting (pid ${process.pid})...`);
@@ -221,6 +344,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => proxy.shutdown());
 
   await proxy.start();
+
+  // Keep process alive — don't rely on Poller alone to hold the event loop
+  await new Promise(() => {});
 }
 
 main().catch((err) => {

@@ -3,6 +3,7 @@ import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
+import { generateAvatar } from "./profile.js";
 
 export function createProxy(config: Config) {
   const context = createContextStore(config);
@@ -68,6 +69,13 @@ export function createProxy(config: Config) {
   async function handleMessage(text: string): Promise<void> {
     console.log(`[proxy] Received: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""}`);
 
+    // Handle /profile separately (async image generation)
+    const profileMatch = text.trim().match(/^\/profile\s+(.+)/i);
+    if (profileMatch) {
+      await handleProfile(profileMatch[1]);
+      return;
+    }
+
     // Check for /commands
     const cmdResult = handleCommand(text, config, context, claude);
     if (cmdResult) {
@@ -130,6 +138,22 @@ export function createProxy(config: Config) {
 
     // Send response to user via Session
     await sessionClient.send(response);
+  }
+
+  async function handleProfile(description: string): Promise<void> {
+    await sessionClient.send("Generating avatar...");
+    console.log(`[proxy] Generating avatar: ${description}`);
+
+    try {
+      const png = await generateAvatar(description);
+      await sessionClient.setAvatar(png);
+      await sessionClient.send("Avatar updated!");
+      console.log(`[proxy] Avatar set (${png.length} bytes)`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      console.error("[proxy] Avatar generation failed:", err);
+      await sessionClient.send(`Avatar generation failed: ${msg}`);
+    }
   }
 
   async function shutdown(): Promise<void> {
