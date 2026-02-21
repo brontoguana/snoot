@@ -3,12 +3,14 @@ import { TOOLS_BY_MODE } from "./types.js";
 
 const RATE_LIMIT_RETRY_DELAY = 30_000; // 30 seconds
 const MAX_RATE_LIMIT_RETRIES = 5;
+const API_ERROR_RETRY_DELAYS = [30_000, 60_000]; // 30s, then 60s, then give up
 
 export function createClaudeManager(config: Config): ClaudeManager {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let alive = false;
   let exitCallbacks: Array<() => void> = [];
   let rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
+  let apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
   // Response queue: resolvers waiting for result messages
   let responseResolvers: Array<{
     resolve: (text: string) => void;
@@ -21,6 +23,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
   let lastUserMessage = "";
   let lastPromptFile: string | undefined;
   let rateLimitRetryCount = 0;
+  let apiErrorRetryCount = 0;
   let pendingRetry = false;
 
   function spawnProcess(promptFile?: string): void {
@@ -247,8 +250,51 @@ export function createClaudeManager(config: Config): ClaudeManager {
           break;
         }
 
+        // API 500 error retry
+        const isApiError = responseText.includes("API Error: 500") ||
+                           responseText.includes('"type":"api_error"') ||
+                           responseText.includes("Internal server error");
+
+        if (isApiError && lastUserMessage && apiErrorRetryCount < API_ERROR_RETRY_DELAYS.length) {
+          const delay = API_ERROR_RETRY_DELAYS[apiErrorRetryCount];
+          apiErrorRetryCount++;
+          pendingRetry = true;
+          console.log(`[claude] API 500 error — retrying in ${delay / 1000}s (attempt ${apiErrorRetryCount}/${API_ERROR_RETRY_DELAYS.length})`);
+
+          for (const cb of apiErrorCallbacks) {
+            cb(delay / 1000, apiErrorRetryCount, API_ERROR_RETRY_DELAYS.length);
+          }
+
+          setTimeout(() => {
+            pendingRetry = false;
+
+            console.log(`[claude] Resending after API error (attempt ${apiErrorRetryCount}) — spawning new process`);
+            spawnProcess(lastPromptFile);
+            try {
+              const stdin = proc!.stdin as import("bun").FileSink;
+              stdin.write(lastUserMessage);
+              stdin.end();
+            } catch (err) {
+              console.error("[claude] Error resending after API error:", err);
+              const resolver = responseResolvers.shift();
+              if (resolver) resolver.resolve("[API error — retry failed]");
+            }
+          }, delay);
+          break;
+        }
+
+        // API error with retries exhausted — give up with clean message
+        if (isApiError) {
+          console.log(`[claude] API 500 error — retries exhausted, giving up`);
+          apiErrorRetryCount = 0;
+          const resolver = responseResolvers.shift();
+          if (resolver) resolver.resolve("[API error (500) — retried but still failing. Try again later.]");
+          break;
+        }
+
         rateLimitDetected = false;
         rateLimitRetryCount = 0;
+        apiErrorRetryCount = 0;
 
         console.log(`[claude] Result received (${responseText.length} chars), resolvers waiting: ${responseResolvers.length}`);
         const resolver = responseResolvers.shift();
@@ -271,6 +317,7 @@ export function createClaudeManager(config: Config): ClaudeManager {
     lastUserMessage = text;
     lastPromptFile = promptFile;
     rateLimitRetryCount = 0;
+    apiErrorRetryCount = 0;
 
     // Kill any leftover process (shouldn't exist, but safety)
     if (proc && alive) {
@@ -344,6 +391,10 @@ export function createClaudeManager(config: Config): ClaudeManager {
     rateLimitCallbacks.push(cb);
   }
 
+  function onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void {
+    apiErrorCallbacks.push(cb);
+  }
+
   function getStatus(): ClaudeStatus {
     return {
       alive,
@@ -353,5 +404,5 @@ export function createClaudeManager(config: Config): ClaudeManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onRateLimit, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onRateLimit, onApiError, getStatus };
 }

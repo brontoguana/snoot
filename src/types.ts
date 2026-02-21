@@ -79,6 +79,7 @@ export interface ClaudeManager {
   kill(): Promise<void>;
   onExit(cb: () => void): void;
   onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
+  onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void;
   getStatus(): ClaudeStatus;
 }
 

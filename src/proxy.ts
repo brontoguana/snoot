@@ -29,6 +29,15 @@ export function createProxy(config: Config) {
       } catch {}
     });
 
+    // Wire up API error retry notification
+    claude.onApiError(async (retryIn, attempt, maxAttempts) => {
+      try {
+        if (attempt <= maxAttempts) {
+          await sessionClient.send(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
+        }
+      } catch {}
+    });
+
     // Wire up process exit handler (for logging/cleanup)
     claude.onExit(async () => {
       if (shuttingDown) return;
