@@ -43,6 +43,16 @@ export function createProxy(config: Config) {
   }
 
   function onMessage(text: string): void {
+    // /hi and /update bypass the queue so they respond even while Claude is busy
+    const trimmed = text.trim().toLowerCase();
+    if (trimmed === "/hi" || trimmed === "/update") {
+      const cmdResult = handleCommand(text, config, context, claude);
+      if (cmdResult) {
+        sessionClient.send(cmdResult.response).catch(() => {});
+      }
+      return;
+    }
+
     messageQueue.push(text);
     if (!processing) {
       processQueue();
