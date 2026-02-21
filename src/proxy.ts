@@ -22,6 +22,14 @@ export function createProxy(config: Config) {
   let messageQueue: string[] = [];
   let shuttingDown = false;
   let pendingAvatar = false;
+  let chunkBuffer = "";
+  let chunksSent = 0;
+  // Progressive flush schedule: 30s for first minute, 60s for next 3 min, 120s after that
+  const FLUSH_SCHEDULE = [
+    { until: 60_000, interval: 30_000 },   // first minute: every 30s
+    { until: 240_000, interval: 60_000 },   // 1-4 min: every 60s
+    { until: Infinity, interval: 120_000 }, // 4+ min: every 2 min
+  ];
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
 
@@ -38,6 +46,10 @@ export function createProxy(config: Config) {
           await sessionClient.send(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
         }
       } catch {}
+    });
+
+    llm.onChunk((text) => {
+      chunkBuffer += text;
     });
 
     llm.onExit(async () => {
@@ -208,6 +220,8 @@ export function createProxy(config: Config) {
 
     // Regular message — build full context and spawn fresh process
     const promptFile = context.buildPrompt();
+    chunkBuffer = "";
+    chunksSent = 0;
     llm.send(text, promptFile);
 
     // Send "thinking" indicators
@@ -223,13 +237,38 @@ export function createProxy(config: Config) {
       }
     }, 90_000);
 
+    // Periodically flush accumulated chunks with progressive intervals
+    const startTime = Date.now();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function scheduleFlush() {
+      const elapsed = Date.now() - startTime;
+      const tier = FLUSH_SCHEDULE.find(t => elapsed < t.until) || FLUSH_SCHEDULE[FLUSH_SCHEDULE.length - 1];
+      flushTimer = setTimeout(async () => {
+        if (chunkBuffer.length > 0) {
+          const toSend = chunkBuffer;
+          chunkBuffer = "";
+          chunksSent += toSend.length;
+          console.log(`[proxy] Flushing ${toSend.length} chars of chunks to user (${chunksSent} total sent)`);
+          try { await sessionClient.send(toSend); } catch {}
+        }
+        scheduleFlush();
+      }, tier.interval);
+    }
+    scheduleFlush();
+
     // Wait for response
     const response = await llm.waitForResponse();
     clearTimeout(thinkingTimer);
     clearTimeout(stillThinkingTimer);
+    if (flushTimer) clearTimeout(flushTimer);
 
-    // Empty response — tell the user instead of silently dropping
-    if (!response) {
+    // Grab any remaining unflushed chunks
+    const remainingChunks = chunkBuffer;
+    chunkBuffer = "";
+
+    // Empty response — tell the user (only if nothing was streamed)
+    if (!response && chunksSent === 0 && !remainingChunks) {
       console.log(`[proxy] ${backendName} returned empty response`);
       await sessionClient.send(`${backendName} returned an empty response — it may have hit a limit. Try again.`);
       return;
@@ -256,11 +295,12 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // Record the exchange
+    // Record the full exchange in context
+    const fullResponse = response || remainingChunks || "";
     const pair = {
       id: context.nextPairId(),
       user: text,
-      assistant: response,
+      assistant: fullResponse,
       timestamp: Date.now(),
     };
     await context.append(pair);
@@ -271,8 +311,15 @@ export function createProxy(config: Config) {
       await context.compact();
     }
 
-    // Send response to user via Session
-    await sessionClient.send(response);
+    // Send response to user — only what hasn't been streamed already
+    if (chunksSent === 0) {
+      // Nothing was streamed — send the full response as before
+      await sessionClient.send(response);
+    } else if (remainingChunks.length > 0) {
+      // Some was streamed, send the remaining buffer
+      await sessionClient.send(remainingChunks);
+    }
+    // If chunksSent > 0 and no remaining, everything was already delivered
   }
 
   async function shutdown(): Promise<void> {

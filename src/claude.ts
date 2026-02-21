@@ -9,6 +9,7 @@ export function createClaudeManager(config: Config): LLMManager {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let alive = false;
   let exitCallbacks: Array<() => void> = [];
+  let chunkCallbacks: Array<(text: string) => void> = [];
   let rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
   let apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
   // Response queue: resolvers waiting for result messages
@@ -191,6 +192,7 @@ export function createClaudeManager(config: Config): LLMManager {
             if (block.type === "text" && block.text) {
               accumulatedText += block.text;
               console.log(`[claude] Accumulated text: ${accumulatedText.slice(0, 100)}...`);
+              for (const cb of chunkCallbacks) cb(block.text);
             }
           }
         }
@@ -387,6 +389,10 @@ export function createClaudeManager(config: Config): LLMManager {
     exitCallbacks.push(cb);
   }
 
+  function onChunk(cb: (text: string) => void): void {
+    chunkCallbacks.push(cb);
+  }
+
   function onRateLimit(cb: (retryIn: number, attempt: number) => void): void {
     rateLimitCallbacks.push(cb);
   }
@@ -405,5 +411,5 @@ export function createClaudeManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onRateLimit, onApiError, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, getStatus };
 }
