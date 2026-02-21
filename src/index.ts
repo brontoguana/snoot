@@ -1,16 +1,72 @@
 #!/usr/bin/env bun
 
 import "@session.js/bun-network";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync } from "fs";
 import { resolve } from "path";
 import type { Config, Mode } from "./types.js";
 import { createProxy } from "./proxy.js";
+
+function killByPidFile(pidFile: string): boolean {
+  if (!existsSync(pidFile)) return false;
+  const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+  if (isNaN(pid)) return false;
+  try {
+    process.kill(pid, 0); // test if alive
+    console.log(`Stopping snoot process (pid ${pid})...`);
+    process.kill(pid, "SIGTERM");
+    Bun.sleepSync(500);
+    try { process.kill(pid, "SIGKILL"); } catch {}
+    try { unlinkSync(pidFile); } catch {}
+    return true;
+  } catch {
+    // Stale PID file
+    try { unlinkSync(pidFile); } catch {}
+    return false;
+  }
+}
+
+function handleShutdown(channel?: string): never {
+  const snootDir = resolve(".snoot");
+  if (!existsSync(snootDir)) {
+    console.log("No .snoot directory found — nothing to shut down.");
+    process.exit(0);
+  }
+
+  if (channel) {
+    const pidFile = resolve(snootDir, channel, "snoot.pid");
+    if (killByPidFile(pidFile)) {
+      console.log(`Snoot stopped for channel "${channel}".`);
+    } else {
+      console.log(`No running snoot found for channel "${channel}".`);
+    }
+  } else {
+    // Kill all channels
+    let killed = 0;
+    for (const entry of readdirSync(snootDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const pidFile = resolve(snootDir, entry.name, "snoot.pid");
+        if (killByPidFile(pidFile)) {
+          console.log(`  Stopped channel "${entry.name}".`);
+          killed++;
+        }
+      }
+    }
+    if (killed === 0) {
+      console.log("No running snoot instances found.");
+    } else {
+      console.log(`Stopped ${killed} instance(s).`);
+    }
+  }
+  process.exit(0);
+}
 
 function parseArgs(): Config {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
+       snoot shutdown [channel]
+       snoot restart <channel> [options]
 
 Options:
   --user <session-id>   User's Session ID (required on first run)
@@ -19,8 +75,28 @@ Options:
   --budget <usd>        Max budget per Claude process in USD (default: 1.00)
   --compact-at <n>      Trigger compaction at N message pairs (default: 20)
   --window <n>          Keep N pairs after compaction (default: 15)
+
+Commands:
+  shutdown [channel]    Stop running instance(s). Omit channel to stop all.
+  restart <channel>     Stop and restart a channel (same as starting with new options).
 `);
     process.exit(0);
+  }
+
+  // Handle subcommands
+  if (args[0] === "shutdown") {
+    handleShutdown(args[1]);
+  }
+
+  // "restart" just means kill existing then start — acquireLock handles the kill,
+  // so we just strip the "restart" keyword and proceed normally
+  const isRestart = args[0] === "restart";
+  if (isRestart) {
+    args.shift();
+    if (args.length === 0) {
+      console.error("Usage: snoot restart <channel> [options]");
+      process.exit(1);
+    }
   }
 
   const channel = args[0];

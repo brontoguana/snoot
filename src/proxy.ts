@@ -99,18 +99,22 @@ export function createProxy(config: Config) {
       claude.send(text, promptFile);
     }
 
-    // Send "thinking" indicator if response takes more than 60s
+    // Send "thinking" indicators at 20s and 90s
     const thinkingTimer = setTimeout(async () => {
       if (claude.isAlive()) {
-        try {
-          await sessionClient.send("[Claude is still thinking...]");
-        } catch {}
+        try { await sessionClient.send("[Claude is thinking...]"); } catch {}
       }
-    }, 60_000);
+    }, 20_000);
+    const stillThinkingTimer = setTimeout(async () => {
+      if (claude.isAlive()) {
+        try { await sessionClient.send("[Claude is still thinking...]"); } catch {}
+      }
+    }, 90_000);
 
     // Wait for response
     const response = await claude.waitForResponse();
     clearTimeout(thinkingTimer);
+    clearTimeout(stillThinkingTimer);
 
     // Skip empty responses (e.g. idle timeout with no pending work)
     if (!response) return;
