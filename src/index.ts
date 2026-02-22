@@ -158,6 +158,111 @@ function handlePs(): never {
   process.exit(0);
 }
 
+function shellQuote(s: string): string {
+  if (/^[a-zA-Z0-9._\-\/=:@]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function getCrontab(): string {
+  const result = Bun.spawnSync(["crontab", "-l"]);
+  if (result.exitCode !== 0) return ""; // no crontab yet
+  return result.stdout.toString();
+}
+
+function setCrontab(content: string): boolean {
+  const result = Bun.spawnSync(["crontab", "-"], {
+    stdin: Buffer.from(content),
+  });
+  if (result.exitCode !== 0) {
+    console.error("Failed to update crontab:", result.stderr.toString());
+    return false;
+  }
+  return true;
+}
+
+function handleCron(): never {
+  const instances = loadInstances();
+
+  if (instances.length === 0) {
+    console.log("No snoot instances in registry. Start instances first, then run 'snoot cron'.");
+    process.exit(1);
+  }
+
+  const currentCrontab = getCrontab();
+
+  // Find which channels already have cron entries
+  const existingChannels = new Set<string>();
+  for (const line of currentCrontab.split("\n")) {
+    const match = line.match(/# snoot:(.+)$/);
+    if (match) existingChannels.add(match[1]);
+  }
+
+  const bunPath = process.execPath;
+  const newEntries: string[] = [];
+
+  for (const inst of instances) {
+    if (existingChannels.has(inst.channel)) {
+      console.log(`  ${inst.channel} — already in crontab, skipping`);
+      continue;
+    }
+
+    const quotedArgs = inst.args.map(shellQuote).join(" ");
+    const entry = `@reboot cd ${shellQuote(inst.cwd)} && ${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)} ${quotedArgs} # snoot:${inst.channel}`;
+    newEntries.push(entry);
+    console.log(`  ${inst.channel} — added`);
+  }
+
+  if (newEntries.length === 0) {
+    console.log("All instances already in crontab.");
+    process.exit(0);
+  }
+
+  const base = currentCrontab.trimEnd();
+  const updatedCrontab = (base ? base + "\n" : "") + newEntries.join("\n") + "\n";
+
+  if (!setCrontab(updatedCrontab)) {
+    process.exit(1);
+  }
+
+  console.log(`Added ${newEntries.length} entry/entries to crontab.`);
+  process.exit(0);
+}
+
+function handleNocron(): never {
+  const currentCrontab = getCrontab();
+
+  if (!currentCrontab.trim()) {
+    console.log("No crontab found.");
+    process.exit(0);
+  }
+
+  const lines = currentCrontab.split("\n");
+  const kept: string[] = [];
+  let removed = 0;
+
+  for (const line of lines) {
+    const match = line.match(/# snoot:(.+)$/);
+    if (match) {
+      console.log(`  Removed: ${match[1]}`);
+      removed++;
+    } else {
+      kept.push(line);
+    }
+  }
+
+  if (removed === 0) {
+    console.log("No snoot entries found in crontab.");
+    process.exit(0);
+  }
+
+  if (!setCrontab(kept.join("\n"))) {
+    process.exit(1);
+  }
+
+  console.log(`Removed ${removed} snoot entry/entries from crontab.`);
+  process.exit(0);
+}
+
 function handleRestart(args: string[]): never {
   const channel = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
   const instances = loadInstances();
@@ -221,6 +326,8 @@ function parseArgs(): Config & { foreground: boolean } {
        snoot shutdown [channel]
        snoot restart [channel]
        snoot ps
+       snoot cron
+       snoot nocron
        snoot set-user <session-id>
 
 Options:
@@ -236,6 +343,8 @@ Commands:
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
   restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
   ps                    List all snoot instances, their status, and project directories.
+  cron                  Add @reboot cron entries for all registered instances.
+  nocron                Remove all snoot @reboot entries from crontab.
   set-user <session-id> Save your Session ID globally (~/.snoot/user.json).
 `);
     process.exit(0);
@@ -252,6 +361,14 @@ Commands:
 
   if (args[0] === "ps") {
     handlePs();
+  }
+
+  if (args[0] === "cron") {
+    handleCron();
+  }
+
+  if (args[0] === "nocron") {
+    handleNocron();
   }
 
   // "restart" — kill existing then re-launch with saved args

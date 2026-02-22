@@ -115,21 +115,19 @@ export function createProxy(config: Config) {
   }
 
   function onMessage(text: string): void {
-    const trimmed = text.trim().toLowerCase();
+    const trimmed = text.trim();
 
     // /claude and /gemini — switch backend (bypass queue)
-    if (trimmed === "/claude" || trimmed === "/gemini") {
-      const backend = trimmed.slice(1) as Backend;
+    if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini") {
+      const backend = trimmed.toLowerCase().slice(1) as Backend;
       switchBackend(backend).then(msg => sessionClient.send(msg).catch(() => {}));
       return;
     }
 
-    // /hi and /update bypass the queue so they respond even while LLM is busy
-    if (trimmed === "/hi" || trimmed === "/update") {
-      const cmdResult = handleCommand(text, config, context, llm);
-      if (cmdResult) {
-        sessionClient.send(cmdResult.response).catch(() => {});
-      }
+    // All slash commands bypass the queue so they respond even while LLM is busy
+    // Exception: /profile <desc> goes to the LLM for avatar generation
+    if (trimmed.startsWith("/") && !trimmed.match(/^\/profile\s+/i)) {
+      handleCommandDirect(text);
       return;
     }
 
@@ -139,62 +137,69 @@ export function createProxy(config: Config) {
     }
   }
 
+  async function handleCommandDirect(text: string): Promise<void> {
+    const cmdResult = handleCommand(text, config, context, llm);
+    if (!cmdResult) return;
+
+    const cmd = text.trim().toLowerCase();
+    if (cmd === "/forget" || cmd === "/clear") {
+      if (llm.isAlive()) await llm.kill();
+      await context.reset();
+    } else {
+      if (cmdResult.restartProcess) {
+        if (llm.isAlive()) await llm.kill();
+        await sessionClient.send(cmdResult.response);
+        Bun.spawn(process.argv, {
+          cwd: process.cwd(),
+          env: process.env,
+          stdout: "inherit",
+          stderr: "inherit",
+          stdin: "ignore",
+        }).unref();
+        process.exit(0);
+        return;
+      }
+      if (cmdResult.killProcess && llm.isAlive()) {
+        await llm.kill();
+      }
+      if (cmdResult.triggerCompaction) {
+        await context.compact();
+      }
+    }
+
+    try {
+      await sessionClient.send(cmdResult.response);
+    } catch {}
+  }
+
   async function processQueue(): Promise<void> {
     processing = true;
 
     while (messageQueue.length > 0) {
-      // Drain all queued messages, separating commands from regular messages
-      const commands: string[] = [];
-      const regular: string[] = [];
-
+      // Drain and batch all queued messages (commands are handled outside the queue)
+      const messages: string[] = [];
       while (messageQueue.length > 0) {
-        const text = messageQueue.shift()!;
-        const trimmed = text.trim();
-        // Check if it's a slash command (but not /profile which goes to Claude)
-        if (trimmed.startsWith("/") && !trimmed.match(/^\/profile\s+/i)) {
-          commands.push(text);
-        } else {
-          regular.push(text);
-        }
+        messages.push(messageQueue.shift()!);
       }
 
-      // Process commands first
-      for (const cmd of commands) {
-        try {
-          await handleMessage(cmd);
-        } catch (err) {
-          console.error("[proxy] Error handling command:", err);
-          try {
-            await sessionClient.send(
-              `Error: ${err instanceof Error ? err.message : "Unknown error"}`
-            );
-          } catch {
-            console.error("[proxy] Failed to send error message");
-          }
-        }
+      const batched = messages.length === 1
+        ? messages[0]
+        : messages.join("\n\n");
+
+      if (messages.length > 1) {
+        console.log(`[proxy] Batched ${messages.length} messages into one request`);
       }
 
-      // Batch regular messages into one LLM call
-      if (regular.length > 0) {
-        const batched = regular.length === 1
-          ? regular[0]
-          : regular.join("\n\n");
-
-        if (regular.length > 1) {
-          console.log(`[proxy] Batched ${regular.length} messages into one request`);
-        }
-
+      try {
+        await handleMessage(batched);
+      } catch (err) {
+        console.error("[proxy] Error handling message:", err);
         try {
-          await handleMessage(batched);
-        } catch (err) {
-          console.error("[proxy] Error handling message:", err);
-          try {
-            await sessionClient.send(
-              `Error: ${err instanceof Error ? err.message : "Unknown error"}`
-            );
-          } catch {
-            console.error("[proxy] Failed to send error message");
-          }
+          await sessionClient.send(
+            `Error: ${err instanceof Error ? err.message : "Unknown error"}`
+          );
+        } catch {
+          console.error("[proxy] Failed to send error message");
         }
       }
     }
