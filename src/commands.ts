@@ -20,7 +20,7 @@ export function handleCommand(
         response: [
           "Snoot commands:",
           "  /help — show this message",
-          "  /hi — check if LLM is busy and when it last did something",
+          "  /boop — check if LLM is busy and when it last did something",
           "  /status — show current state",
           "  /context — show summary and pins",
           `  /mode <chat|research|coding> — switch mode (current: ${config.mode})`,
@@ -36,6 +36,7 @@ export function handleCommand(
         ].join("\n"),
       };
 
+    case "/boop":
     case "/hi":
     case "/update": {
       const status = llm.getStatus();

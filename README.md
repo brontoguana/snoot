@@ -147,7 +147,7 @@ Send these from your phone in the Session chat:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
-| `/hi` or `/update` | Quick status check — is the AI busy? When was it last active? |
+| `/boop` or `/update` | Quick status check — is the AI busy? When was it last active? |
 | `/status` | Show full state (backend, mode, process status, message count) |
 | `/context` | Show summary and pinned items |
 | `/mode <mode>` | Switch mode (chat/research/coding) |
