@@ -30,7 +30,7 @@ export function handleCommand(
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate and set avatar from description",
           "  /compact — force context compaction",
-          "  /kill — cancel the current request",
+          "  /stop — cancel the current request",
           "  /restart — restart the snoot process",
           "  /forget or /clear — clear all context and restart",
         ].join("\n"),
@@ -144,6 +144,7 @@ export function handleCommand(
       };
     }
 
+    case "/stop":
     case "/kill":
       if (!llm.isAlive()) {
         return { response: "Nothing to cancel — idle." };

@@ -157,7 +157,7 @@ Send these from your phone in the Session chat:
 | `/unpin <id>` | Remove a pinned item |
 | `/profile <description>` | Generate and set an avatar from a text description |
 | `/compact` | Force context compaction now |
-| `/kill` | Cancel the current request |
+| `/stop` | Cancel the current request |
 | `/restart` | Restart the snoot process |
 | `/forget` or `/clear` | Clear all context and start fresh |
 
