@@ -1,5 +1,5 @@
 import { join } from "path";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, appendFileSync } from "fs";
 import type { Config, LLMManager, Backend } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
@@ -32,6 +32,15 @@ export function createProxy(config: Config) {
   ];
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
+  const watchLogPath = join(config.baseDir, "watch.log");
+
+  // Truncate watch log on startup so it only shows the current session
+  writeFileSync(watchLogPath, "");
+
+  function watchLog(line: string): void {
+    const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    appendFileSync(watchLogPath, `${time}  ${line}\n`);
+  }
 
   /** Send a response that may contain inline SVG blocks as images */
   async function sendRichResponse(text: string): Promise<void> {
@@ -62,12 +71,14 @@ export function createProxy(config: Config) {
 
   function wireLLMCallbacks(): void {
     llm.onRateLimit(async (retryIn, attempt) => {
+      watchLog(`⏳ Rate limited — retrying in ${retryIn}s (attempt ${attempt}/5)`);
       try {
         await sessionClient.send(`⏳ Rate limited — retrying in ${retryIn}s (attempt ${attempt}/5)`);
       } catch {}
     });
 
     llm.onApiError(async (retryIn, attempt, maxAttempts) => {
+      watchLog(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
       try {
         if (attempt <= maxAttempts) {
           await sessionClient.send(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
@@ -77,6 +88,14 @@ export function createProxy(config: Config) {
 
     llm.onChunk((text) => {
       chunkBuffer += text;
+      // Stream LLM output to watch log in real-time
+      const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const logLines = text.split('\n').map(l => `${time}  │ ${l}\n`).join('');
+      appendFileSync(watchLogPath, logLines);
+    });
+
+    llm.onActivity((line) => {
+      watchLog(line);
     });
 
     llm.onExit(async () => {
@@ -107,6 +126,7 @@ export function createProxy(config: Config) {
 
     sessionClient.startListening(onMessage);
     console.log(`[proxy] Ready. Mode: ${config.mode}, Backend: ${config.backend}`);
+    watchLog(`🟢 Snoot online — ${config.backend} / ${config.mode} / ${config.workDir}`);
 
     // Greet the user so the conversation appears in their Session app
     await sessionClient.send(
@@ -117,9 +137,13 @@ export function createProxy(config: Config) {
   function onMessage(text: string): void {
     const trimmed = text.trim();
 
+    // Log all incoming messages to watch
+    watchLog(`← ${trimmed.slice(0, 1000)}${trimmed.length > 1000 ? "..." : ""}`);
+
     // /claude and /gemini — switch backend (bypass queue)
     if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini") {
       const backend = trimmed.toLowerCase().slice(1) as Backend;
+      watchLog(`🔄 Switching to ${backend}`);
       switchBackend(backend).then(msg => sessionClient.send(msg).catch(() => {}));
       return;
     }
@@ -143,10 +167,12 @@ export function createProxy(config: Config) {
 
     const cmd = text.trim().toLowerCase();
     if (cmd === "/forget" || cmd === "/clear") {
+      watchLog(`🗑️ Clearing context`);
       if (llm.isAlive()) await llm.kill();
       await context.reset();
     } else {
       if (cmdResult.restartProcess) {
+        watchLog(`🔄 Restarting snoot`);
         if (llm.isAlive()) await llm.kill();
         await sessionClient.send(cmdResult.response);
         Bun.spawn(process.argv, {
@@ -160,9 +186,11 @@ export function createProxy(config: Config) {
         return;
       }
       if (cmdResult.killProcess && llm.isAlive()) {
+        watchLog(`🛑 Stopping process`);
         await llm.kill();
       }
       if (cmdResult.triggerCompaction) {
+        watchLog(`📦 Compacting context`);
         await context.compact();
       }
     }
@@ -351,10 +379,14 @@ export function createProxy(config: Config) {
     // Send response to user — only what hasn't been streamed already
     if (chunksSent === 0) {
       // Nothing was streamed — send full response, extracting any SVG images
+      watchLog(`→ Sending response (${(response || "").length} chars)`);
       await sendRichResponse(response);
     } else if (remainingChunks.length > 0) {
       // Some was streamed, send the remaining buffer with SVG extraction
+      watchLog(`→ Sending remaining ${remainingChunks.length} chars`);
       await sendRichResponse(remainingChunks);
+    } else {
+      watchLog(`→ Response fully streamed (${chunksSent} chars)`);
     }
     // If chunksSent > 0 and no remaining, everything was already delivered
   }

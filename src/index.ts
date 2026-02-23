@@ -263,6 +263,48 @@ function handleNocron(): never {
   process.exit(0);
 }
 
+async function handleWatch(args: string[]): Promise<never> {
+  const channel = args[0];
+  if (!channel) {
+    console.error("Usage: snoot watch <channel>");
+    process.exit(1);
+  }
+
+  // Find from global registry (case-insensitive) or fall back to local
+  const instances = loadInstances();
+  const inst = instances.find(i => i.channel.toLowerCase() === channel.toLowerCase());
+
+  let watchLogPath: string;
+  if (inst) {
+    watchLogPath = resolve(inst.cwd, `.snoot/${inst.channel}/watch.log`);
+  } else {
+    watchLogPath = resolve(`.snoot/${channel}/watch.log`);
+  }
+
+  if (!existsSync(watchLogPath)) {
+    console.log(`No watch log found for channel "${channel}".`);
+    console.log(`Is snoot running? Start it with: snoot ${channel}`);
+    process.exit(1);
+  }
+
+  const displayName = inst ? inst.channel : channel;
+  console.log(`Watching snoot "${displayName}"... (Ctrl+C to stop)\n`);
+
+  const child = Bun.spawn(["tail", "-f", "-n", "+1", watchLogPath], {
+    stdout: "inherit",
+    stderr: "inherit",
+    stdin: "inherit",
+  });
+
+  process.on("SIGINT", () => {
+    child.kill();
+    process.exit(0);
+  });
+
+  await child.exited;
+  process.exit(0);
+}
+
 function handleRestart(args: string[]): never {
   const channel = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
   const instances = loadInstances();
@@ -318,13 +360,14 @@ function resolveUserSessionId(userSessionId: string, baseDir: string): string {
   return "";
 }
 
-function parseArgs(): Config & { foreground: boolean } {
+async function parseArgs(): Promise<Config & { foreground: boolean }> {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
        snoot shutdown [channel]
        snoot restart [channel]
+       snoot watch <channel>
        snoot ps
        snoot cron
        snoot nocron
@@ -342,6 +385,7 @@ Options:
 Commands:
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
   restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
+  watch <channel>       Watch live activity (tool use, spawns, responses) in real time.
   ps                    List all snoot instances, their status, and project directories.
   cron                  Add @reboot cron entries for all registered instances.
   nocron                Remove all snoot @reboot entries from crontab.
@@ -369,6 +413,10 @@ Commands:
 
   if (args[0] === "nocron") {
     handleNocron();
+  }
+
+  if (args[0] === "watch") {
+    await handleWatch(args.slice(1));
   }
 
   // "restart" — kill existing then re-launch with saved args
@@ -543,7 +591,7 @@ async function main(): Promise<void> {
   // Check if we're the daemon child (re-spawned in background)
   const isDaemon = process.env.SNOOT_DAEMON === "1";
 
-  const config = parseArgs();
+  const config = await parseArgs();
 
   // If not --fg and not already the daemon, spawn ourselves in the background
   if (!config.foreground && !isDaemon) {

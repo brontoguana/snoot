@@ -12,6 +12,7 @@ export function createClaudeManager(config: Config): LLMManager {
   let chunkCallbacks: Array<(text: string) => void> = [];
   let rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
   let apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
+  let activityCallbacks: Array<(line: string) => void> = [];
   // Response queue: resolvers waiting for result messages
   let responseResolvers: Array<{
     resolve: (text: string) => void;
@@ -26,6 +27,24 @@ export function createClaudeManager(config: Config): LLMManager {
   let rateLimitRetryCount = 0;
   let apiErrorRetryCount = 0;
   let pendingRetry = false;
+
+  function emitActivity(line: string): void {
+    for (const cb of activityCallbacks) cb(line);
+  }
+
+  function formatToolUse(name: string, input: any): string {
+    switch (name) {
+      case "Read": return `Read ${input?.file_path || ""}`;
+      case "Edit": return `Edit ${input?.file_path || ""}`;
+      case "Write": return `Write ${input?.file_path || ""}`;
+      case "Bash": return `Bash: ${(input?.command || "").slice(0, 120)}`;
+      case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path || "."}`;
+      case "Glob": return `Glob ${input?.pattern || ""}`;
+      case "WebSearch": return `WebSearch: ${(input?.query || "").slice(0, 100)}`;
+      case "WebFetch": return `WebFetch: ${(input?.url || "").slice(0, 100)}`;
+      default: return name;
+    }
+  }
 
   function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
@@ -81,6 +100,7 @@ export function createClaudeManager(config: Config): LLMManager {
 
     console.log(`[claude] Spawned process (pid: ${proc.pid})`);
     console.log(`[claude] Args: ${args.join(" ")}`);
+    emitActivity(`⚡ claude spawned (pid ${proc.pid})`);
 
     // Read stdout as NDJSON
     readOutputStream();
@@ -94,6 +114,7 @@ export function createClaudeManager(config: Config): LLMManager {
 
       if (code !== 0) {
         console.error(`[claude] Process exited with code ${code}`);
+        emitActivity(`❌ Process exited with code ${code}`);
       } else {
         console.log("[claude] Process exited normally");
       }
@@ -203,6 +224,10 @@ export function createClaudeManager(config: Config): LLMManager {
               accumulatedText += block.text;
               console.log(`[claude] Accumulated text: ${accumulatedText.slice(0, 100)}...`);
               for (const cb of chunkCallbacks) cb(block.text);
+            } else if (block.type === "tool_use") {
+              const detail = formatToolUse(block.name, block.input);
+              console.log(`[claude] Tool use: ${detail}`);
+              emitActivity(`🔧 ${detail}`);
             }
           }
         }
@@ -309,6 +334,7 @@ export function createClaudeManager(config: Config): LLMManager {
         apiErrorRetryCount = 0;
 
         console.log(`[claude] Result received (${responseText.length} chars), resolvers waiting: ${responseResolvers.length}`);
+        emitActivity(`✅ Done (${responseText.length} chars)`);
         const resolver = responseResolvers.shift();
         if (resolver) {
           resolver.resolve(responseText);
@@ -411,6 +437,10 @@ export function createClaudeManager(config: Config): LLMManager {
     apiErrorCallbacks.push(cb);
   }
 
+  function onActivity(cb: (line: string) => void): void {
+    activityCallbacks.push(cb);
+  }
+
   function getStatus(): LLMStatus {
     return {
       alive,
@@ -421,5 +451,5 @@ export function createClaudeManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, getStatus };
 }

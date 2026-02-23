@@ -84,6 +84,7 @@ export interface LLMManager {
   onChunk(cb: (text: string) => void): void;
   onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
   onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void;
+  onActivity(cb: (line: string) => void): void;
   getStatus(): LLMStatus;
 }
 

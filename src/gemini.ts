@@ -19,6 +19,7 @@ export function createGeminiManager(config: Config): LLMManager {
   let chunkCallbacks: Array<(text: string) => void> = [];
   let rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
   let apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
+  let activityCallbacks: Array<(line: string) => void> = [];
   let responseResolvers: Array<{
     resolve: (text: string) => void;
     reject: (err: Error) => void;
@@ -32,6 +33,10 @@ export function createGeminiManager(config: Config): LLMManager {
   let apiErrorRetryCount = 0;
   let pendingRetry = false;
   let rateLimitDetected = false;
+
+  function emitActivity(line: string): void {
+    for (const cb of activityCallbacks) cb(line);
+  }
 
   function buildArgs(): string[] {
     const args = [
@@ -67,6 +72,7 @@ export function createGeminiManager(config: Config): LLMManager {
     lastActivityAt = Date.now();
 
     console.log(`[gemini] Spawned process (pid: ${proc.pid})`);
+    emitActivity(`⚡ gemini spawned (pid ${proc.pid})`);
 
     readOutputStream();
     readErrorStream();
@@ -76,6 +82,7 @@ export function createGeminiManager(config: Config): LLMManager {
 
       if (code !== 0) {
         console.error(`[gemini] Process exited with code ${code}`);
+        emitActivity(`❌ Process exited with code ${code}`);
       } else {
         console.log("[gemini] Process exited normally");
       }
@@ -245,6 +252,7 @@ export function createGeminiManager(config: Config): LLMManager {
         apiErrorRetryCount = 0;
 
         console.log(`[gemini] Result received (${responseText.length} chars), resolvers waiting: ${responseResolvers.length}`);
+        emitActivity(`✅ Done (${responseText.length} chars)`);
         const resolver = responseResolvers.shift();
         if (resolver) {
           resolver.resolve(responseText);
@@ -256,6 +264,7 @@ export function createGeminiManager(config: Config): LLMManager {
         break;
       case "tool_use":
         console.log(`[gemini] Tool use: ${msg.tool_name}`);
+        emitActivity(`🔧 ${msg.tool_name || "unknown tool"}`);
         break;
       case "tool_result":
         console.log(`[gemini] Tool result: ${msg.tool_id} (${msg.status})`);
@@ -341,6 +350,10 @@ export function createGeminiManager(config: Config): LLMManager {
     apiErrorCallbacks.push(cb);
   }
 
+  function onActivity(cb: (line: string) => void): void {
+    activityCallbacks.push(cb);
+  }
+
   function getStatus(): LLMStatus {
     return {
       alive,
@@ -351,5 +364,5 @@ export function createGeminiManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, getStatus };
 }
