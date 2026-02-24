@@ -1,6 +1,6 @@
 import { join } from "path";
-import { existsSync, writeFileSync, appendFileSync } from "fs";
-import type { Config, LLMManager, Backend } from "./types.js";
+import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
+import type { Config, LLMManager, Backend, IncomingMessage, IncomingAttachment } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
@@ -22,14 +22,10 @@ export function createProxy(config: Config) {
   let messageQueue: string[] = [];
   let shuttingDown = false;
   let pendingAvatar = false;
-  let chunkBuffer = "";
-  let chunksSent = 0;
-  // Progressive flush schedule: 30s for first minute, 60s for next 3 min, 120s after that
-  const FLUSH_SCHEDULE = [
-    { until: 60_000, interval: 30_000 },   // first minute: every 30s
-    { until: 240_000, interval: 60_000 },   // 1-4 min: every 60s
-    { until: Infinity, interval: 120_000 }, // 4+ min: every 2 min
-  ];
+  type BufferEntry = { type: "text"; content: string } | { type: "tool"; content: string };
+  let chunkBuffer: BufferEntry[] = [];
+  let textCharsSent = 0;
+  const FLUSH_INTERVAL = 30_000;
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
   const watchLogPath = join(config.baseDir, "watch.log");
@@ -87,7 +83,7 @@ export function createProxy(config: Config) {
     });
 
     llm.onChunk((text) => {
-      chunkBuffer += text;
+      chunkBuffer.push({ type: "text", content: text });
       // Stream LLM output to watch log in real-time
       const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
       const logLines = text.split('\n').map(l => `${time}  │ ${l}\n`).join('');
@@ -96,6 +92,10 @@ export function createProxy(config: Config) {
 
     llm.onActivity((line) => {
       watchLog(line);
+      // Capture tool calls into buffer for user messages
+      if (line.startsWith("🔧")) {
+        chunkBuffer.push({ type: "tool", content: line });
+      }
     });
 
     llm.onExit(async () => {
@@ -128,17 +128,50 @@ export function createProxy(config: Config) {
     console.log(`[proxy] Ready. Mode: ${config.mode}, Backend: ${config.backend}`);
     watchLog(`🟢 Snoot online — ${config.backend} / ${config.mode} / ${config.workDir}`);
 
+    // Wait for session to connect, then re-upload avatar before greeting
+    await new Promise(r => setTimeout(r, 3000));
+    await sessionClient.reuploadAvatar();
+
     // Greet the user so the conversation appears in their Session app
     await sessionClient.send(
-      `Snoot is online. Backend: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
+      `✅ Snoot is online. Backend: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
     );
+
+    // Watch inbox for terminal input (from snoot watch)
+    const inboxPath = join(config.baseDir, "inbox");
+    writeFileSync(inboxPath, "");
+    let inboxOffset = 0;
+
+    fsWatch(inboxPath, () => {
+      try {
+        const content = readFileSync(inboxPath, "utf-8");
+        if (content.length <= inboxOffset) return;
+        const newContent = content.slice(inboxOffset);
+        inboxOffset = content.length;
+        for (const line of newContent.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const { text } = JSON.parse(line);
+            if (text) onMessage({ text, attachments: [] });
+          } catch {}
+        }
+      } catch {}
+    });
   }
 
-  function onMessage(text: string): void {
-    const trimmed = text.trim();
+  function onMessage(msg: IncomingMessage): void {
+    const trimmed = msg.text.trim();
 
     // Log all incoming messages to watch
-    watchLog(`← ${trimmed.slice(0, 1000)}${trimmed.length > 1000 ? "..." : ""}`);
+    const logText = trimmed || (msg.attachments.length > 0 ? `[${msg.attachments.length} attachment(s)]` : "");
+    watchLog(`← ${logText.slice(0, 1000)}${logText.length > 1000 ? "..." : ""}`);
+
+    // /profile with image attachment — set avatar directly, no LLM needed
+    if (trimmed.match(/^\/profile\s*$/i) && msg.attachments.length > 0) {
+      // Use first attachment — don't require contentType since session.js may not provide it
+      handleProfileImage(msg.attachments[0]);
+      return;
+    }
 
     // /claude and /gemini — switch backend (bypass queue)
     if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini") {
@@ -151,13 +184,29 @@ export function createProxy(config: Config) {
     // All slash commands bypass the queue so they respond even while LLM is busy
     // Exception: /profile <desc> goes to the LLM for avatar generation
     if (trimmed.startsWith("/") && !trimmed.match(/^\/profile\s+/i)) {
-      handleCommandDirect(text);
+      handleCommandDirect(msg.text);
       return;
     }
 
-    messageQueue.push(text);
+    messageQueue.push(msg.text);
     if (!processing) {
       processQueue();
+    }
+  }
+
+  async function handleProfileImage(attachment: IncomingAttachment): Promise<void> {
+    watchLog(`🖼️ Setting avatar from attached image`);
+    try {
+      const file = await sessionClient.getFile(attachment);
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      await sessionClient.setAvatar(bytes);
+      await sessionClient.send("Avatar updated!");
+      console.log(`[proxy] Avatar set from attachment (${bytes.length} bytes)`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      console.error("[proxy] Avatar from attachment failed:", err);
+      try { await sessionClient.send(`Avatar failed: ${msg}`); } catch {}
     }
   }
 
@@ -235,6 +284,54 @@ export function createProxy(config: Config) {
     processing = false;
   }
 
+  /** Flush chunk buffer: group entries into messages (each starts with text, followed by tool calls) */
+  async function flushChunkBuffer(): Promise<void> {
+    if (chunkBuffer.length === 0) return;
+
+    const entries = chunkBuffer.splice(0);
+
+    // Group entries: each text entry starts a new message group, tools append to current group
+    const groups: string[][] = [];
+    for (const entry of entries) {
+      if (entry.type === "text") {
+        groups.push([entry.content]);
+        textCharsSent += entry.content.length;
+      } else {
+        // Tool call — append to last group, or create new one if none exists
+        if (groups.length === 0) groups.push([]);
+        groups[groups.length - 1].push(entry.content);
+      }
+    }
+
+    // Collapse consecutive identical tool lines within each group (e.g. "🔧 Read foo.ts (x4)")
+    for (const group of groups) {
+      const collapsed: string[] = [];
+      for (const line of group) {
+        if (line.startsWith("🔧") && collapsed.length > 0) {
+          const prev = collapsed[collapsed.length - 1];
+          // Check if previous line is the same tool call (with or without existing count)
+          const prevMatch = prev.match(/^(.+?)( \(x(\d+)\))?$/);
+          if (prevMatch && prevMatch[1] === line) {
+            const count = prevMatch[3] ? parseInt(prevMatch[3]) + 1 : 2;
+            collapsed[collapsed.length - 1] = `${line} (x${count})`;
+            continue;
+          }
+        }
+        collapsed.push(line);
+      }
+      group.length = 0;
+      group.push(...collapsed);
+    }
+
+    // Send each group as a separate Session message
+    for (const group of groups) {
+      const msg = group.join("\n").trim();
+      if (msg) {
+        try { await sendRichResponse(msg); } catch {}
+      }
+    }
+  }
+
   async function handleMessage(text: string): Promise<void> {
     console.log(`[proxy] Received: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""}`);
 
@@ -284,8 +381,8 @@ export function createProxy(config: Config) {
 
     // Regular message — build full context and spawn fresh process
     const promptFile = context.buildPrompt();
-    chunkBuffer = "";
-    chunksSent = 0;
+    chunkBuffer = [];
+    textCharsSent = 0;
     llm.send(text, promptFile);
 
     // Send "thinking" indicators
@@ -301,38 +398,23 @@ export function createProxy(config: Config) {
       }
     }, 90_000);
 
-    // Periodically flush accumulated chunks with progressive intervals
-    const startTime = Date.now();
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-    function scheduleFlush() {
-      const elapsed = Date.now() - startTime;
-      const tier = FLUSH_SCHEDULE.find(t => elapsed < t.until) || FLUSH_SCHEDULE[FLUSH_SCHEDULE.length - 1];
-      flushTimer = setTimeout(async () => {
-        if (chunkBuffer.length > 0) {
-          const toSend = chunkBuffer;
-          chunkBuffer = "";
-          chunksSent += toSend.length;
-          console.log(`[proxy] Flushing ${toSend.length} chars of chunks to user (${chunksSent} total sent)`);
-          try { await sessionClient.send(toSend); } catch {}
-        }
-        scheduleFlush();
-      }, tier.interval);
-    }
-    scheduleFlush();
+    // Flush accumulated chunks every 30s
+    let flushTimer: ReturnType<typeof setInterval> | null = null;
+    flushTimer = setInterval(async () => {
+      await flushChunkBuffer();
+    }, FLUSH_INTERVAL);
 
     // Wait for response
     const response = await llm.waitForResponse();
     clearTimeout(thinkingTimer);
     clearTimeout(stillThinkingTimer);
-    if (flushTimer) clearTimeout(flushTimer);
+    if (flushTimer) clearInterval(flushTimer);
 
-    // Grab any remaining unflushed chunks
-    const remainingChunks = chunkBuffer;
-    chunkBuffer = "";
+    // Flush any remaining entries in the buffer
+    await flushChunkBuffer();
 
     // Empty response — tell the user (only if nothing was streamed)
-    if (!response && chunksSent === 0 && !remainingChunks) {
+    if (!response && textCharsSent === 0 && chunkBuffer.length === 0) {
       console.log(`[proxy] ${backendName} returned empty response`);
       await sessionClient.send(`${backendName} returned an empty response — it may have hit a limit. Try again.`);
       return;
@@ -359,8 +441,8 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // Record the exchange in context (strip SVGs to save space)
-    const fullResponse = response || remainingChunks || "";
+    // Record the exchange in context (text only, strip SVGs)
+    const fullResponse = response || "";
     const contextResponse = fullResponse.replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]");
     const pair = {
       id: context.nextPairId(),
@@ -376,19 +458,16 @@ export function createProxy(config: Config) {
       await context.compact();
     }
 
-    // Send response to user — only what hasn't been streamed already
-    if (chunksSent === 0) {
-      // Nothing was streamed — send full response, extracting any SVG images
-      watchLog(`→ Sending response (${(response || "").length} chars)`);
+    // If nothing was streamed yet, send the full response now
+    if (textCharsSent === 0 && response) {
+      watchLog(`→ Sending response (${response.length} chars)`);
       await sendRichResponse(response);
-    } else if (remainingChunks.length > 0) {
-      // Some was streamed, send the remaining buffer with SVG extraction
-      watchLog(`→ Sending remaining ${remainingChunks.length} chars`);
-      await sendRichResponse(remainingChunks);
     } else {
-      watchLog(`→ Response fully streamed (${chunksSent} chars)`);
+      watchLog(`→ Response streamed (${textCharsSent} chars)`);
     }
-    // If chunksSent > 0 and no remaining, everything was already delivered
+
+    // Notify the user that the LLM has finished
+    try { await sessionClient.send("✅ Finished"); } catch {}
   }
 
   async function shutdown(): Promise<void> {

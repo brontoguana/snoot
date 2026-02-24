@@ -1,3 +1,4 @@
+import path from "path";
 import type { Config, LLMManager, LLMStatus, StreamJsonOutput } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
@@ -34,11 +35,11 @@ export function createClaudeManager(config: Config): LLMManager {
 
   function formatToolUse(name: string, input: any): string {
     switch (name) {
-      case "Read": return `Read ${input?.file_path || ""}`;
-      case "Edit": return `Edit ${input?.file_path || ""}`;
-      case "Write": return `Write ${input?.file_path || ""}`;
+      case "Read": return `Read ${input?.file_path ? path.basename(input.file_path) : ""}`;
+      case "Edit": return `Edit ${input?.file_path ? path.basename(input.file_path) : ""}`;
+      case "Write": return `Write ${input?.file_path ? path.basename(input.file_path) : ""}`;
       case "Bash": return `Bash: ${(input?.command || "").slice(0, 120)}`;
-      case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path || "."}`;
+      case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path ? path.basename(input.path) : "."}`;
       case "Glob": return `Glob ${input?.pattern || ""}`;
       case "WebSearch": return `WebSearch: ${(input?.query || "").slice(0, 100)}`;
       case "WebFetch": return `WebFetch: ${(input?.url || "").slice(0, 100)}`;

@@ -2,7 +2,7 @@ import { Session, Poller, ready } from "@session.js/client";
 import { generateSeedHex } from "@session.js/keypair";
 import { encode } from "@session.js/mnemonic";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import type { Config, SessionClient } from "./types.js";
+import type { Config, SessionClient, IncomingAttachment, IncomingMessage } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 6000;
 const RETRY_DELAY = 30_000;
@@ -52,23 +52,49 @@ export async function createSessionClient(config: Config): Promise<SessionClient
   const session = new Session();
   session.setMnemonic(identity.mnemonic, identity.displayName);
 
-  // Restore cached avatar if available
-  const avatarCache = `${config.baseDir}/avatar.png`;
-  if (existsSync(avatarCache)) {
+  // Restore cached avatar metadata directly onto the session instance.
+  // This makes the avatar URL+key available immediately so the very first
+  // outgoing message includes avatar info (no re-upload needed).
+  const avatarMetaPath = `${config.baseDir}/avatar-meta.json`;
+  if (existsSync(avatarMetaPath)) {
     try {
-      const png = readFileSync(avatarCache);
-      await session.setAvatar(new Uint8Array(png));
-      console.log("[session] Restored cached avatar");
+      const { key, url } = JSON.parse(readFileSync(avatarMetaPath, "utf-8"));
+      (session as any).avatar = { key: new Uint8Array(key), url };
+      console.log(`[session] Avatar metadata restored from cache`);
     } catch (err) {
-      console.error("[session] Failed to restore avatar:", err);
+      console.error(`[session] Failed to restore avatar metadata:`, err);
     }
   }
 
-  function startListening(onMessage: (text: string) => void): void {
+  function startListening(onMessage: (msg: IncomingMessage) => void): void {
     const startedAt = Date.now();
     const seenTimestamps = new Set<number>();
 
     session.addPoller(new Poller());
+
+    // Re-upload avatar in background so the file server URL stays fresh.
+    // The metadata restore above covers the immediate need (first messages),
+    // this ensures the URL doesn't expire over longer periods.
+    const avatarCache = `${config.baseDir}/avatar.png`;
+    if (existsSync(avatarCache)) {
+      setTimeout(async () => {
+        try {
+          const png = readFileSync(avatarCache);
+          await session.setAvatar(new Uint8Array(png));
+          // Update cached metadata with fresh URL
+          const avatar = (session as any).avatar;
+          if (avatar) {
+            writeFileSync(avatarMetaPath, JSON.stringify({
+              key: Array.from(avatar.key),
+              url: avatar.url,
+            }));
+          }
+          console.log(`[session] Avatar re-uploaded and metadata refreshed`);
+        } catch (err) {
+          console.error(`[session] Background avatar re-upload failed:`, err);
+        }
+      }, 10000);
+    }
 
     session.on("message", (message: any) => {
       // Only accept messages from the configured user
@@ -90,9 +116,19 @@ export async function createSessionClient(config: Config): Promise<SessionClient
       }
       seenTimestamps.add(ts);
 
-      const text = message.text;
-      if (text) {
-        onMessage(text);
+      const text = message.text || "";
+      const rawAttachments: any[] = message.attachments || [];
+      const attachments: IncomingAttachment[] = rawAttachments.map((a: any) => ({
+        id: a.id,
+        contentType: a.metadata?.contentType,
+        name: a.name,
+        size: a.size,
+        _raw: a,
+      }));
+
+      // Accept if there's text or attachments
+      if (text || attachments.length > 0) {
+        onMessage({ text, attachments });
       }
     });
 
@@ -145,15 +181,46 @@ export async function createSessionClient(config: Config): Promise<SessionClient
 
   async function setAvatar(png: Uint8Array): Promise<void> {
     await withRetry(() => session.setAvatar(png), "setAvatar");
-    // Persist so avatar survives restarts
+    // Persist PNG so we can re-upload later
     const avatarCache = `${config.baseDir}/avatar.png`;
     writeFileSync(avatarCache, png);
-    console.log(`[session] Avatar cached to ${avatarCache}`);
+    // Persist URL + key so first message after restart includes avatar
+    const avatar = (session as any).avatar;
+    if (avatar) {
+      writeFileSync(avatarMetaPath, JSON.stringify({
+        key: Array.from(avatar.key),
+        url: avatar.url,
+      }));
+    }
+    console.log(`[session] Avatar cached (png + metadata)`);
+  }
+
+  async function reuploadAvatar(): Promise<void> {
+    const avatarCache = `${config.baseDir}/avatar.png`;
+    if (!existsSync(avatarCache)) return;
+    try {
+      const png = readFileSync(avatarCache);
+      await session.setAvatar(new Uint8Array(png));
+      const avatar = (session as any).avatar;
+      if (avatar) {
+        writeFileSync(avatarMetaPath, JSON.stringify({
+          key: Array.from(avatar.key),
+          url: avatar.url,
+        }));
+      }
+      console.log(`[session] Avatar re-uploaded before greeting`);
+    } catch (err) {
+      console.error(`[session] Avatar re-upload failed:`, err);
+    }
+  }
+
+  async function getFile(attachment: IncomingAttachment): Promise<File> {
+    return await session.getFile(attachment._raw as any);
   }
 
   function getSessionId(): string {
     return identity.sessionId;
   }
 
-  return { startListening, send, sendImage, setAvatar, getSessionId };
+  return { startListening, send, sendImage, setAvatar, reuploadAvatar, getFile, getSessionId };
 }

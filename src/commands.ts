@@ -28,7 +28,8 @@ export function handleCommand(
           `  /gemini — switch to Gemini backend`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
-          "  /profile <description> — generate and set avatar from description",
+          "  /profile <description> — generate avatar from description",
+          "  /profile + image — set attached image as avatar",
           "  /compact — force context compaction",
           "  /stop — cancel the current request",
           "  /restart — restart the snoot process",
@@ -144,6 +145,11 @@ export function handleCommand(
         response: `Pin #${id} removed (if it existed). Use /context to see remaining pins.`,
       };
     }
+
+    case "/profile":
+      return {
+        response: "Usage: /profile <description> to generate an avatar, or send /profile with an attached image.",
+      };
 
     case "/stop":
     case "/kill":

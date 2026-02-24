@@ -10,8 +10,9 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 
 - When a message arrives, Snoot builds a context prompt (summary + pins + recent history) and spawns a new process.
 - Multiple messages sent in quick succession are batched into a single request.
-- For long-running requests, partial responses stream back progressively (every 30s for the first minute, then 60s, then every 2 minutes).
+- For long-running requests, partial responses stream back every 30 seconds, including tool call activity so you can see what the AI is doing.
 - Responses containing inline SVG diagrams are automatically converted to PNG images and sent through Session.
+- When the AI finishes, you get a "Finished" confirmation.
 
 ## Requirements
 
@@ -43,6 +44,7 @@ chmod +x ~/.local/bin/snoot
 
 ```
 snoot <channel> [options]
+snoot watch <channel>
 snoot shutdown [channel]
 snoot restart [channel]
 snoot ps
@@ -97,6 +99,15 @@ snoot restart mychannel
 # Restart all running instances
 snoot restart
 ```
+
+### Watching live activity
+
+```bash
+# Follow real-time activity (tool calls, LLM output, messages)
+snoot watch mychannel
+```
+
+This tails the watch log and shows incoming messages, tool calls, and streaming LLM output. You can also type messages directly in the terminal and press Enter to send them — they're processed identically to messages from your phone.
 
 ### Listing instances
 
@@ -156,6 +167,7 @@ Send these from your phone in the Session chat:
 | `/pin <text>` | Pin context that survives compaction |
 | `/unpin <id>` | Remove a pinned item |
 | `/profile <description>` | Generate and set an avatar from a text description |
+| `/profile` + image | Set an attached image as the avatar directly |
 | `/compact` | Force context compaction now |
 | `/stop` | Cancel the current request |
 | `/restart` | Restart the snoot process |
@@ -176,12 +188,13 @@ SVGs are stripped from conversation history (replaced with `[image]`) to save co
 
 ## Avatar Generation
 
-The `/profile <description>` command generates a custom avatar for the Snoot bot:
+Two ways to set the Snoot avatar:
 
-1. You send `/profile a cyberpunk crow` (or any description).
-2. The AI generates an SVG matching your description using the Write tool.
-3. Snoot converts it to a 256x256 PNG and sets it as the Session profile picture.
-4. The avatar is cached and restored automatically when the instance restarts.
+**From a description**: Send `/profile a cyberpunk crow` — the AI generates an SVG, Snoot converts it to PNG, and sets it as the profile picture.
+
+**From an image**: Send `/profile` with an image attached — Snoot uses the image directly as the avatar.
+
+The avatar is cached and restored automatically when the instance restarts.
 
 ## Context Management
 
@@ -197,13 +210,7 @@ All state lives in `.snoot/<channel>/` within your project directory.
 
 ## Progressive Streaming
 
-For requests that take more than 30 seconds, Snoot streams partial responses back to your phone so you're not left waiting:
-
-- **0–1 min**: flushes accumulated text every 30 seconds
-- **1–4 min**: every 60 seconds
-- **4+ min**: every 2 minutes
-
-Short responses are sent all at once as usual.
+For requests that take more than 30 seconds, Snoot streams partial responses back to your phone every 30 seconds. Each batch includes both the AI's text output and tool call activity (file reads, edits, searches, etc.) so you can see what it's doing. Short responses are sent all at once. When the AI finishes, you receive a "Finished" confirmation.
 
 ## Error Handling
 

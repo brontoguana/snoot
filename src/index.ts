@@ -275,10 +275,15 @@ async function handleWatch(args: string[]): Promise<never> {
   const inst = instances.find(i => i.channel.toLowerCase() === channel.toLowerCase());
 
   let watchLogPath: string;
+  let inboxPath: string;
   if (inst) {
-    watchLogPath = resolve(inst.cwd, `.snoot/${inst.channel}/watch.log`);
+    const baseDir = resolve(inst.cwd, `.snoot/${inst.channel}`);
+    watchLogPath = resolve(baseDir, "watch.log");
+    inboxPath = resolve(baseDir, "inbox");
   } else {
-    watchLogPath = resolve(`.snoot/${channel}/watch.log`);
+    const baseDir = resolve(`.snoot/${channel}`);
+    watchLogPath = resolve(baseDir, "watch.log");
+    inboxPath = resolve(baseDir, "inbox");
   }
 
   if (!existsSync(watchLogPath)) {
@@ -288,15 +293,31 @@ async function handleWatch(args: string[]): Promise<never> {
   }
 
   const displayName = inst ? inst.channel : channel;
-  console.log(`Watching snoot "${displayName}"... (Ctrl+C to stop)\n`);
+  console.log(`Watching snoot "${displayName}"... (Ctrl+C to stop)`);
+  console.log(`Type a message and press Enter to send.\n`);
 
+  // Tail watch log for output
   const child = Bun.spawn(["tail", "-f", "-n", "+1", watchLogPath], {
     stdout: "inherit",
     stderr: "inherit",
-    stdin: "inherit",
+    stdin: "ignore",
+  });
+
+  // Read user input from terminal and write to inbox for proxy to pick up
+  const { createInterface } = await import("readline");
+  const rl = createInterface({
+    input: process.stdin,
+    terminal: false,
+  });
+
+  rl.on("line", (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    appendFileSync(inboxPath, JSON.stringify({ text: trimmed, ts: Date.now() }) + "\n");
   });
 
   process.on("SIGINT", () => {
+    rl.close();
     child.kill();
     process.exit(0);
   });
@@ -616,14 +637,16 @@ async function main(): Promise<void> {
 
     try {
       process.kill(child.pid, 0); // test if alive
-      console.log(`Snoot started in background (pid ${child.pid})`);
-      console.log(`  Channel: ${config.channel}`);
-      console.log(`  Log: ${logFile}`);
-      process.exit(0);
     } catch {
       console.error(`Snoot failed to start. Check ${logFile} for details.`);
       process.exit(1);
     }
+
+    console.log(`Snoot started in background (pid ${child.pid})`);
+    console.log(`  Channel: ${config.channel}`);
+    console.log(`  Log: ${logFile}`);
+    console.log(`  Watch: snoot watch ${config.channel}`);
+    process.exit(0);
   }
 
   // We're either in foreground mode or the daemon child

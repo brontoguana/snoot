@@ -94,11 +94,27 @@ export type ClaudeManager = LLMManager;
 
 // -- Session --
 
+export interface IncomingAttachment {
+  id: string;
+  contentType?: string;
+  name?: string;
+  size?: number;
+  /** Raw session.js attachment for getFile() */
+  _raw: unknown;
+}
+
+export interface IncomingMessage {
+  text: string;
+  attachments: IncomingAttachment[];
+}
+
 export interface SessionClient {
-  startListening(onMessage: (text: string) => void): void;
+  startListening(onMessage: (msg: IncomingMessage) => void): void;
   send(text: string): Promise<void>;
   sendImage(png: Uint8Array, caption?: string): Promise<void>;
   setAvatar(png: Uint8Array): Promise<void>;
+  reuploadAvatar(): Promise<void>;
+  getFile(attachment: IncomingAttachment): Promise<File>;
   getSessionId(): string;
 }
 
