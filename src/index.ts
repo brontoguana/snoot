@@ -347,7 +347,7 @@ function handleRestart(args: string[]): never {
     // Re-launch with saved args from registry
     const launchArgs = inst.args.length > 0 ? inst.args : [inst.channel];
     console.log(`Restarting channel "${inst.channel}" with args: ${launchArgs.join(" ")}`);
-    const child = Bun.spawn(["bun", SNOOT_SRC, ...launchArgs], {
+    const child = Bun.spawn([process.execPath, SNOOT_SRC, ...launchArgs], {
       cwd: inst.cwd,
       env: process.env,
       stdout: "ignore",
@@ -621,7 +621,7 @@ async function main(): Promise<void> {
 
     const logFd = openSync(logFile, "a");
 
-    const child = Bun.spawn(["bun", SNOOT_SRC, ...process.argv.slice(2)], {
+    const child = Bun.spawn([process.execPath, SNOOT_SRC, ...process.argv.slice(2)], {
       cwd: process.cwd(),
       env: { ...process.env, SNOOT_DAEMON: "1" },
       stdout: logFd,
@@ -653,6 +653,15 @@ async function main(): Promise<void> {
   if (isDaemon) {
     const logFile = resolve(`.snoot/${config.channel}/snoot.log`);
     redirectToLog(logFile);
+  }
+
+  // Kill any existing instance of this channel (from any directory) via global registry
+  const existing = loadInstances().find(
+    i => i.channel.toLowerCase() === config.channel.toLowerCase() && isAlive(i.pid)
+  );
+  if (existing && existing.pid !== process.pid) {
+    console.log(`Killing existing "${existing.channel}" instance (pid ${existing.pid}, cwd ${existing.cwd})...`);
+    killInstance(existing);
   }
 
   acquireLock(config.baseDir, config.channel);

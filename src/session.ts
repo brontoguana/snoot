@@ -6,18 +6,29 @@ import type { Config, SessionClient, IncomingAttachment, IncomingMessage } from 
 
 const MAX_MESSAGE_LENGTH = 6000;
 const RETRY_DELAY = 30_000;
+const SEND_TIMEOUT = 30_000; // 30s timeout on all Session sends
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`[session] ${label} timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
 
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   try {
-    return await fn();
+    return await withTimeout(fn(), SEND_TIMEOUT, label);
   } catch (err) {
     const name = err?.constructor?.name ?? "";
     const msg = err instanceof Error ? err.message : String(err);
-    // Retry once on network-level errors
-    if (name.includes("Fetch") || name.includes("Network") || msg.includes("fetch") || msg.includes("network")) {
-      console.error(`[session] ${label} failed (${name}), retrying in 30s...`);
+    // Retry once on network-level or timeout errors
+    if (name.includes("Fetch") || name.includes("Network") || msg.includes("fetch") || msg.includes("network") || msg.includes("timed out")) {
+      console.error(`[session] ${label} failed (${msg}), retrying in 30s...`);
       await Bun.sleep(RETRY_DELAY);
-      return await fn();
+      return await withTimeout(fn(), SEND_TIMEOUT, label);
     }
     throw err;
   }

@@ -19,6 +19,8 @@ export function createProxy(config: Config) {
   let llm: LLMManager = createLLM(config);
   let sessionClient: Awaited<ReturnType<typeof createSessionClient>>;
   let processing = false;
+  let processingStartedAt = 0;
+  const PROCESSING_TIMEOUT = 5 * 60_000; // 5 minutes — force-reset if stuck
   let messageQueue: string[] = [];
   let shuttingDown = false;
   let pendingAvatar = false;
@@ -100,6 +102,11 @@ export function createProxy(config: Config) {
 
     llm.onExit(async () => {
       if (shuttingDown) return;
+      // If we're not currently processing a message, this is an unexpected exit
+      // (e.g. Claude was killed externally). Notify the user.
+      if (!processing) {
+        watchLog("⚠️ LLM process exited unexpectedly");
+      }
     });
   }
 
@@ -189,6 +196,15 @@ export function createProxy(config: Config) {
     }
 
     messageQueue.push(msg.text);
+
+    // Watchdog: if processing has been stuck for too long, force-reset
+    if (processing && processingStartedAt > 0 && Date.now() - processingStartedAt > PROCESSING_TIMEOUT) {
+      const stuckFor = Math.round((Date.now() - processingStartedAt) / 1000);
+      console.error(`[proxy] Processing stuck for ${stuckFor}s — force-resetting`);
+      watchLog(`⚠️ Processing stuck for ${stuckFor}s — force-resetting`);
+      processing = false;
+    }
+
     if (!processing) {
       processQueue();
     }
@@ -251,6 +267,7 @@ export function createProxy(config: Config) {
 
   async function processQueue(): Promise<void> {
     processing = true;
+    processingStartedAt = Date.now();
 
     while (messageQueue.length > 0) {
       // Drain and batch all queued messages (commands are handled outside the queue)
@@ -282,53 +299,67 @@ export function createProxy(config: Config) {
     }
 
     processing = false;
+    processingStartedAt = 0;
   }
+
+  /** Promise that resolves when any in-progress flush completes */
+  let flushInProgress: Promise<void> = Promise.resolve();
 
   /** Flush chunk buffer: group entries into messages (each starts with text, followed by tool calls) */
   async function flushChunkBuffer(): Promise<void> {
-    if (chunkBuffer.length === 0) return;
+    // Chain flushes so concurrent calls are serialized
+    const previous = flushInProgress;
+    let resolve!: () => void;
+    flushInProgress = new Promise<void>((r) => { resolve = r; });
+    // Wait for previous flush, but don't wait forever (prevents deadlock if prior flush hung)
+    await Promise.race([previous, new Promise<void>(r => setTimeout(r, 60_000))]);
+    if (chunkBuffer.length === 0) { resolve(); return; }
 
-    const entries = chunkBuffer.splice(0);
+    try {
+      const entries = chunkBuffer.splice(0);
 
-    // Group entries: each text entry starts a new message group, tools append to current group
-    const groups: string[][] = [];
-    for (const entry of entries) {
-      if (entry.type === "text") {
-        groups.push([entry.content]);
-        textCharsSent += entry.content.length;
-      } else {
-        // Tool call — append to last group, or create new one if none exists
-        if (groups.length === 0) groups.push([]);
-        groups[groups.length - 1].push(entry.content);
-      }
-    }
-
-    // Collapse consecutive identical tool lines within each group (e.g. "🔧 Read foo.ts (x4)")
-    for (const group of groups) {
-      const collapsed: string[] = [];
-      for (const line of group) {
-        if (line.startsWith("🔧") && collapsed.length > 0) {
-          const prev = collapsed[collapsed.length - 1];
-          // Check if previous line is the same tool call (with or without existing count)
-          const prevMatch = prev.match(/^(.+?)( \(x(\d+)\))?$/);
-          if (prevMatch && prevMatch[1] === line) {
-            const count = prevMatch[3] ? parseInt(prevMatch[3]) + 1 : 2;
-            collapsed[collapsed.length - 1] = `${line} (x${count})`;
-            continue;
-          }
+      // Group entries: each text entry starts a new message group, tools append to current group
+      const groups: string[][] = [];
+      for (const entry of entries) {
+        if (entry.type === "text") {
+          groups.push([entry.content]);
+          textCharsSent += entry.content.length;
+        } else {
+          // Tool call — append to last group, or create new one if none exists
+          if (groups.length === 0) groups.push([]);
+          groups[groups.length - 1].push(entry.content);
         }
-        collapsed.push(line);
       }
-      group.length = 0;
-      group.push(...collapsed);
-    }
 
-    // Send each group as a separate Session message
-    for (const group of groups) {
-      const msg = group.join("\n").trim();
-      if (msg) {
-        try { await sendRichResponse(msg); } catch {}
+      // Collapse consecutive identical tool lines within each group (e.g. "🔧 Read foo.ts (x4)")
+      for (const group of groups) {
+        const collapsed: string[] = [];
+        for (const line of group) {
+          if (line.startsWith("🔧") && collapsed.length > 0) {
+            const prev = collapsed[collapsed.length - 1];
+            // Check if previous line is the same tool call (with or without existing count)
+            const prevMatch = prev.match(/^(.+?)( \(x(\d+)\))?$/);
+            if (prevMatch && prevMatch[1] === line) {
+              const count = prevMatch[3] ? parseInt(prevMatch[3]) + 1 : 2;
+              collapsed[collapsed.length - 1] = `${line} (x${count})`;
+              continue;
+            }
+          }
+          collapsed.push(line);
+        }
+        group.length = 0;
+        group.push(...collapsed);
       }
+
+      // Send each group as a separate Session message
+      for (const group of groups) {
+        const msg = group.join("\n").trim();
+        if (msg) {
+          try { await sendRichResponse(msg); } catch {}
+        }
+      }
+    } finally {
+      resolve();
     }
   }
 
@@ -392,12 +423,6 @@ export function createProxy(config: Config) {
         try { await sessionClient.send("💭 thinking..."); } catch {}
       }
     }, 5_000);
-    const stillThinkingTimer = setTimeout(async () => {
-      if (llm.isAlive()) {
-        try { await sessionClient.send("💭 still thinking..."); } catch {}
-      }
-    }, 90_000);
-
     // Flush accumulated chunks every 30s
     let flushTimer: ReturnType<typeof setInterval> | null = null;
     flushTimer = setInterval(async () => {
@@ -407,67 +432,77 @@ export function createProxy(config: Config) {
     // Wait for response
     const response = await llm.waitForResponse();
     clearTimeout(thinkingTimer);
-    clearTimeout(stillThinkingTimer);
     if (flushTimer) clearInterval(flushTimer);
 
-    // Flush any remaining entries in the buffer
-    await flushChunkBuffer();
+    // Post-response phase: flush, record, send.
+    // All Session sends already have a 30s timeout (session.ts), so individual
+    // sends can't hang forever.  Wrap the whole block in try/catch so a send
+    // failure doesn't leave `processing` stuck.
+    try {
+      // Flush any remaining entries in the buffer
+      await flushChunkBuffer();
 
-    // Empty response — tell the user (only if nothing was streamed)
-    if (!response && textCharsSent === 0 && chunkBuffer.length === 0) {
-      console.log(`[proxy] ${backendName} returned empty response`);
-      await sessionClient.send(`${backendName} returned an empty response — it may have hit a limit. Try again.`);
-      return;
-    }
-
-    // If this was a /profile request, check for the SVG file and set avatar
-    if (pendingAvatar) {
-      pendingAvatar = false;
-      try {
-        if (existsSync(avatarSvgPath)) {
-          const png = await convertAvatarSvg(avatarSvgPath);
-          await sessionClient.setAvatar(png);
-          await sessionClient.send("Avatar updated!");
-          console.log(`[proxy] Avatar set (${png.length} bytes)`);
-        } else {
-          await sessionClient.send("Avatar generation failed: SVG file was not created.");
-          console.error("[proxy] Avatar SVG not found at", avatarSvgPath);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unknown error";
-        console.error("[proxy] Avatar conversion failed:", err);
-        await sessionClient.send(`Avatar failed: ${msg}`);
+      // Empty response — tell the user (only if nothing was streamed)
+      if (!response && textCharsSent === 0 && chunkBuffer.length === 0) {
+        console.log(`[proxy] ${backendName} returned empty response`);
+        await sessionClient.send(`${backendName} returned an empty response — it may have hit a limit. Try again.`);
+        return;
       }
-      return;
+
+      // If this was a /profile request, check for the SVG file and set avatar
+      if (pendingAvatar) {
+        pendingAvatar = false;
+        try {
+          if (existsSync(avatarSvgPath)) {
+            const png = await convertAvatarSvg(avatarSvgPath);
+            await sessionClient.setAvatar(png);
+            await sessionClient.send("Avatar updated!");
+            console.log(`[proxy] Avatar set (${png.length} bytes)`);
+          } else {
+            await sessionClient.send("Avatar generation failed: SVG file was not created.");
+            console.error("[proxy] Avatar SVG not found at", avatarSvgPath);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          console.error("[proxy] Avatar conversion failed:", err);
+          try { await sessionClient.send(`Avatar failed: ${msg}`); } catch {}
+        }
+        return;
+      }
+
+      // Record the exchange in context (text only, strip SVGs)
+      const fullResponse = response || "";
+      const contextResponse = fullResponse.replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]");
+      const pair = {
+        id: context.nextPairId(),
+        user: text,
+        assistant: contextResponse,
+        timestamp: Date.now(),
+      };
+      await context.append(pair);
+
+      // Check if compaction is needed after recording the exchange
+      if (context.needsCompaction()) {
+        console.log("[proxy] Compaction threshold reached, compacting...");
+        await context.compact();
+      }
+
+      // If nothing was streamed yet, send the full response now
+      if (textCharsSent === 0 && response) {
+        watchLog(`→ Sending response (${response.length} chars)`);
+        await sendRichResponse(response);
+      } else {
+        watchLog(`→ Response streamed (${textCharsSent} chars)`);
+      }
+
+      // Notify the user that the LLM has finished
+      try { await sessionClient.send("✅ Finished"); } catch {}
+    } catch (err) {
+      console.error("[proxy] Post-response error:", err);
+      watchLog(`⚠️ Post-response error: ${err instanceof Error ? err.message : err}`);
+      // Try to notify user, but don't let this block either
+      try { await sessionClient.send("⚠️ Error delivering response. Send another message to retry."); } catch {}
     }
-
-    // Record the exchange in context (text only, strip SVGs)
-    const fullResponse = response || "";
-    const contextResponse = fullResponse.replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]");
-    const pair = {
-      id: context.nextPairId(),
-      user: text,
-      assistant: contextResponse,
-      timestamp: Date.now(),
-    };
-    await context.append(pair);
-
-    // Check if compaction is needed after recording the exchange
-    if (context.needsCompaction()) {
-      console.log("[proxy] Compaction threshold reached, compacting...");
-      await context.compact();
-    }
-
-    // If nothing was streamed yet, send the full response now
-    if (textCharsSent === 0 && response) {
-      watchLog(`→ Sending response (${response.length} chars)`);
-      await sendRichResponse(response);
-    } else {
-      watchLog(`→ Response streamed (${textCharsSent} chars)`);
-    }
-
-    // Notify the user that the LLM has finished
-    try { await sessionClient.send("✅ Finished"); } catch {}
   }
 
   async function shutdown(): Promise<void> {
