@@ -4,6 +4,8 @@ A proxy that bridges [Session](https://getsession.org) encrypted messenger with 
 
 Messages flow: **Session app** → **Snoot proxy** → **Claude/Gemini process** → **back to Session**.
 
+![Snoot screenshot](screenshot.png)
+
 ## How It Works
 
 Snoot uses an ephemeral per-message model — each message (or batch of rapid messages) spawns a fresh AI process, gets a response, and exits. The proxy owns all conversation state and manages context compaction between requests.
