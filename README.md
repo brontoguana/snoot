@@ -16,7 +16,6 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 
 ## Requirements
 
-- [Bun](https://bun.sh) runtime
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on PATH
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and on PATH (optional, for Gemini backend)
 - A Session account/ID for the user
@@ -25,20 +24,16 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 
 ```bash
 git clone https://github.com/brontoguana/snoot.git
-cd snoot
-bun install
+cd snoot && ./install.sh
 ```
 
-To make `snoot` available globally, create a wrapper script on your PATH:
+This installs Bun (if needed), fetches dependencies, and creates a global `snoot` command. Then set your Session ID:
 
 ```bash
-mkdir -p ~/.local/bin
-cat > ~/.local/bin/snoot << 'EOF'
-#!/bin/bash
-exec bun /path/to/snoot/src/index.ts "$@"
-EOF
-chmod +x ~/.local/bin/snoot
+snoot set-user 05abc123...
 ```
+
+This saves to `~/.snoot/user.json` and is used for all projects unless overridden with `--user`.
 
 ## Usage
 
@@ -52,15 +47,6 @@ snoot cron
 snoot nocron
 snoot set-user <session-id>
 ```
-
-### First-time setup
-
-```bash
-# Save your Session ID globally (once)
-snoot set-user 05abc123...
-```
-
-This saves to `~/.snoot/user.json` and is used for all projects unless overridden with `--user`.
 
 ### Starting a channel
 
