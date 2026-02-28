@@ -4,7 +4,7 @@ A proxy that bridges [Session](https://getsession.org) encrypted messenger with 
 
 Messages flow: **Session app** → **Snoot proxy** → **Claude/Gemini process** → **back to Session**.
 
-![Snoot screenshot](screenshot.png)
+<img src="screenshot.jpg" width="250">
 
 ## How It Works
 
