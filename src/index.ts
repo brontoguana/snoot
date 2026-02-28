@@ -8,8 +8,17 @@ import type { Config, Mode, Backend } from "./types.js";
 import { createProxy } from "./proxy.js";
 
 const SNOOT_SRC = import.meta.filename;
+const IS_COMPILED = SNOOT_SRC.startsWith("/$bunfs/");
 const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
 const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
+
+// Build a command to spawn ourselves.
+// In compiled mode, process.execPath IS the binary — no script arg needed.
+// In interpreted mode, we need: bun <script> <args>
+function selfCommand(...extraArgs: string[]): string[] {
+  if (IS_COMPILED) return [process.execPath, ...extraArgs];
+  return [process.execPath, SNOOT_SRC, ...extraArgs];
+}
 
 interface InstanceInfo {
   channel: string;
@@ -207,7 +216,10 @@ function handleCron(): never {
     }
 
     const quotedArgs = inst.args.map(shellQuote).join(" ");
-    const entry = `@reboot cd ${shellQuote(inst.cwd)} && ${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)} ${quotedArgs} # snoot:${inst.channel}`;
+    const selfCmd = IS_COMPILED
+      ? shellQuote(process.execPath)
+      : `${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)}`;
+    const entry = `@reboot cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
     newEntries.push(entry);
     console.log(`  ${inst.channel} — added`);
   }
@@ -347,7 +359,7 @@ function handleRestart(args: string[]): never {
     // Re-launch with saved args from registry
     const launchArgs = inst.args.length > 0 ? inst.args : [inst.channel];
     console.log(`Restarting channel "${inst.channel}" with args: ${launchArgs.join(" ")}`);
-    const child = Bun.spawn([process.execPath, SNOOT_SRC, ...launchArgs], {
+    const child = Bun.spawn(selfCommand(...launchArgs), {
       cwd: inst.cwd,
       env: process.env,
       stdout: "ignore",
@@ -576,6 +588,7 @@ function acquireLock(baseDir: string, channel: string): void {
 }
 
 function redirectToLog(logFile: string): void {
+  mkdirSync(dirname(logFile), { recursive: true });
   const fd = openSync(logFile, "a");
   const write = (data: string | Uint8Array) => {
     const str = typeof data === "string" ? data : new TextDecoder().decode(data);
@@ -621,7 +634,7 @@ async function main(): Promise<void> {
 
     const logFd = openSync(logFile, "a");
 
-    const child = Bun.spawn([process.execPath, SNOOT_SRC, ...process.argv.slice(2)], {
+    const child = Bun.spawn(selfCommand(...process.argv.slice(2)), {
       cwd: process.cwd(),
       env: { ...process.env, SNOOT_DAEMON: "1" },
       stdout: logFd,

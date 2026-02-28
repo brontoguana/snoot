@@ -19,15 +19,15 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on PATH
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and on PATH (optional, for Gemini backend)
 - A Session account/ID for the user
+- Linux x86_64 (pre-built binary)
 
 ## Install
 
 ```bash
-git clone https://github.com/brontoguana/snoot.git
-cd snoot && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/brontoguana/snoot/main/install.sh | bash
 ```
 
-This installs Bun (if needed), fetches dependencies, and creates a global `snoot` command. Then set your Session ID:
+This downloads a standalone binary to `~/.local/bin/snoot` — no runtime dependencies needed. Then set your Session ID:
 
 ```bash
 snoot set-user 05abc123...
@@ -203,6 +203,20 @@ For requests that take more than 30 seconds, Snoot streams partial responses bac
 - **Rate limits**: Automatically retries after 30 seconds, up to 5 attempts. Notifies you of each retry.
 - **API errors (500)**: Same auto-retry with backoff and notification.
 - **Empty responses**: Detects and reports when the AI returns nothing (usually a budget or rate limit issue).
+
+## Building from Source
+
+If you want to modify Snoot or build for a different platform:
+
+```bash
+git clone https://github.com/brontoguana/snoot.git
+cd snoot
+bun install
+./build.sh              # produces dist/snoot-linux-x64
+cp dist/snoot-linux-x64 ~/.local/bin/snoot
+```
+
+Requires [Bun](https://bun.sh) to build.
 
 ## Project Structure
 
