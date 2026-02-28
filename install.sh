@@ -44,6 +44,6 @@ fi
 
 echo
 echo "Done! Next steps:"
-echo "  snoot set-user <your-session-id>    # one-time setup"
+echo "  snoot set-user <recipient-session-id>    # one-time setup"
 echo "  cd /your/project && snoot MyChannel  # start a channel"
 echo
