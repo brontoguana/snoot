@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join, resolve, extname } from "path";
 import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
 import type { Config, LLMManager, Backend, IncomingMessage, IncomingAttachment } from "./types.js";
 import { createSessionClient } from "./session.js";
@@ -173,6 +173,14 @@ export function createProxy(config: Config) {
     const logText = trimmed || (msg.attachments.length > 0 ? `[${msg.attachments.length} attachment(s)]` : "");
     watchLog(`← ${logText.slice(0, 1000)}${logText.length > 1000 ? "..." : ""}`);
 
+    // /save and /overwrite with attachment — save file to working directory
+    const saveMatch = trimmed.match(/^\/(save|overwrite)\s+(.+)/i);
+    if (saveMatch && msg.attachments.length > 0) {
+      const allowOverwrite = saveMatch[1].toLowerCase() === "overwrite";
+      handleSaveFile(saveMatch[2].trim(), msg.attachments[0], allowOverwrite);
+      return;
+    }
+
     // /profile with image attachment — set avatar directly, no LLM needed
     if (trimmed.match(/^\/profile\s*$/i) && msg.attachments.length > 0) {
       // Use first attachment — don't require contentType since session.js may not provide it
@@ -223,6 +231,66 @@ export function createProxy(config: Config) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       console.error("[proxy] Avatar from attachment failed:", err);
       try { await sessionClient.send(`Avatar failed: ${msg}`); } catch {}
+    }
+  }
+
+  function detectImageExtension(contentType?: string, fileName?: string): string | null {
+    if (contentType) {
+      const map: Record<string, string> = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/svg+xml": "svg",
+        "image/bmp": "bmp",
+        "image/tiff": "tiff",
+      };
+      if (map[contentType]) return map[contentType];
+    }
+    // Fallback: try extension from the attachment's original filename
+    if (fileName) {
+      const match = fileName.match(/\.(\w+)$/);
+      if (match) return match[1].toLowerCase();
+    }
+    return null;
+  }
+
+  async function handleSaveFile(name: string, attachment: IncomingAttachment, allowOverwrite: boolean): Promise<void> {
+    const verb = allowOverwrite ? "Overwriting" : "Saving";
+    watchLog(`💾 ${verb} file as "${name}"`);
+    try {
+      const file = await sessionClient.getFile(attachment);
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+
+      // If name has no extension and it's an image, autodetect extension
+      let filename = name;
+      if (!extname(filename)) {
+        const ext = detectImageExtension(attachment.contentType, file.name);
+        if (ext) {
+          filename = `${filename}.${ext}`;
+        }
+      }
+
+      // Prevent path traversal
+      const savePath = resolve(config.workDir, filename);
+      if (!savePath.startsWith(resolve(config.workDir))) {
+        await sessionClient.send("Invalid filename — cannot save outside working directory.");
+        return;
+      }
+
+      if (!allowOverwrite && existsSync(savePath)) {
+        await sessionClient.send(`File "${filename}" already exists. Use /overwrite ${name} to replace it.`);
+        return;
+      }
+
+      writeFileSync(savePath, bytes);
+      await sessionClient.send(`Saved "${filename}" (${bytes.length} bytes)`);
+      console.log(`[proxy] Saved file: ${savePath} (${bytes.length} bytes)`);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "Unknown error";
+      console.error("[proxy] Save file failed:", err);
+      try { await sessionClient.send(`Save failed: ${errMsg}`); } catch {}
     }
   }
 

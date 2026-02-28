@@ -154,6 +154,8 @@ Send these from your phone in the Session chat:
 | `/unpin <id>` | Remove a pinned item |
 | `/profile <description>` | Generate an avatar from a text description |
 | `/profile` (with image attached) | Set the attached image as the avatar |
+| `/save <name>` (with file attached) | Save attachment to working directory (refuses if file exists) |
+| `/overwrite <name>` (with file attached) | Same as `/save` but allows overwriting existing files |
 | `/compact` | Force context compaction now |
 | `/stop` | Cancel the current request |
 | `/restart` | Restart the snoot process |

@@ -30,6 +30,8 @@ export function handleCommand(
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate avatar from description",
           "  /profile + image — set attached image as avatar",
+          "  /save <name> + attachment — save file to working directory",
+          "  /overwrite <name> + attachment — same, but allows overwriting",
           "  /compact — force context compaction",
           "  /stop — cancel the current request",
           "  /restart — restart the snoot process",
@@ -150,6 +152,14 @@ export function handleCommand(
       return {
         response: "Usage: /profile <description> to generate an avatar, or send /profile with an attached image.",
       };
+
+    case "/save":
+    case "/overwrite": {
+      if (!args) {
+        return { response: `Usage: ${cmd} <name> — attach a file or image to save.` };
+      }
+      return { response: `${cmd} requires an attached file or image. Resend with an attachment.` };
+    }
 
     case "/stop":
     case "/kill":
