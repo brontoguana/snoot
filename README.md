@@ -18,7 +18,7 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on PATH
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and on PATH (optional, for Gemini backend)
-- A Session account/ID for the user
+- The [Session](https://getsession.org) messenger app on your phone
 - Linux x86_64 (pre-built binary)
 
 ## Install
@@ -152,8 +152,8 @@ Send these from your phone in the Session chat:
 | `/gemini` | Switch to Gemini backend |
 | `/pin <text>` | Pin context that survives compaction |
 | `/unpin <id>` | Remove a pinned item |
-| `/profile <description>` | Generate and set an avatar from a text description |
-| `/profile` + image | Set an attached image as the avatar directly |
+| `/profile <description>` | Generate an avatar from a text description |
+| `/profile` (with image attached) | Set the attached image as the avatar |
 | `/compact` | Force context compaction now |
 | `/stop` | Cancel the current request |
 | `/restart` | Restart the snoot process |
