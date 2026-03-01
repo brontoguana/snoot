@@ -20,6 +20,7 @@ export function createClaudeManager(config: Config): LLMManager {
     reject: (err: Error) => void;
   }> = [];
   let accumulatedText = "";
+  let stdoutDone: Promise<void> = Promise.resolve();
   let spawnedAt: number | null = null;
   let lastActivityAt: number | null = null;
   let rateLimitDetected = false;
@@ -28,6 +29,51 @@ export function createClaudeManager(config: Config): LLMManager {
   let rateLimitRetryCount = 0;
   let apiErrorRetryCount = 0;
   let pendingRetry = false;
+  let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startHealthCheck(): void {
+    stopHealthCheck();
+    healthCheckTimer = setInterval(() => {
+      if (!proc || !alive) {
+        stopHealthCheck();
+        return;
+      }
+
+      // Check if the process PID still exists (signal 0 = existence check)
+      try {
+        process.kill(proc.pid, 0);
+      } catch {
+        // Process is gone but we didn't get an exit event
+        console.error(`[claude] Health check: process ${proc.pid} is dead (likely OOM killed)`);
+        emitActivity(`❌ Process died unexpectedly (pid ${proc.pid})`);
+
+        alive = false;
+        proc = null;
+        stopHealthCheck();
+
+        // Resolve any pending response resolvers
+        const pending = responseResolvers;
+        responseResolvers = [];
+        for (const { resolve } of pending) {
+          if (accumulatedText) {
+            resolve(accumulatedText);
+          } else {
+            resolve("[Claude process was killed unexpectedly (possibly OOM). Try again.]");
+          }
+        }
+        accumulatedText = "";
+
+        for (const cb of exitCallbacks) cb();
+      }
+    }, 20_000);
+  }
+
+  function stopHealthCheck(): void {
+    if (healthCheckTimer) {
+      clearInterval(healthCheckTimer);
+      healthCheckTimer = null;
+    }
+  }
 
   function emitActivity(line: string): void {
     for (const cb of activityCallbacks) cb(line);
@@ -98,20 +144,33 @@ export function createClaudeManager(config: Config): LLMManager {
     accumulatedText = "";
     spawnedAt = Date.now();
     lastActivityAt = Date.now();
+    startHealthCheck();
 
     console.log(`[claude] Spawned process (pid: ${proc.pid})`);
     console.log(`[claude] Args: ${args.join(" ")}`);
     emitActivity(`⚡ claude spawned (pid ${proc.pid})`);
 
-    // Read stdout as NDJSON
-    readOutputStream();
+    // Read stdout as NDJSON — keep promise so exit handler can wait for it
+    stdoutDone = readOutputStream();
 
     // Read stderr for logging
     readErrorStream();
 
-    // Handle process exit
-    proc.exited.then((code) => {
+    // Handle process exit — wait for stdout to drain before resolving
+    const thisProc = proc;
+    proc.exited.then(async (code) => {
+      // Wait for stdout reader to finish so all output (including the
+      // result message) is processed before we touch resolvers.
+      await stdoutDone;
+
+      // If a newer process has been spawned, this exit is stale — ignore it.
+      if (proc !== thisProc) {
+        console.log(`[claude] Stale exit ignored (pid was ${thisProc.pid})`);
+        return;
+      }
+
       alive = false;
+      stopHealthCheck();
 
       if (code !== 0) {
         console.error(`[claude] Process exited with code ${code}`);
@@ -388,6 +447,7 @@ export function createClaudeManager(config: Config): LLMManager {
     if (!proc || !alive) return;
 
     alive = false;
+    stopHealthCheck();
 
     try {
       // Close stdin to let Claude finish gracefully

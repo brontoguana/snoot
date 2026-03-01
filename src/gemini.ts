@@ -33,6 +33,48 @@ export function createGeminiManager(config: Config): LLMManager {
   let apiErrorRetryCount = 0;
   let pendingRetry = false;
   let rateLimitDetected = false;
+  let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startHealthCheck(): void {
+    stopHealthCheck();
+    healthCheckTimer = setInterval(() => {
+      if (!proc || !alive) {
+        stopHealthCheck();
+        return;
+      }
+
+      try {
+        process.kill(proc.pid, 0);
+      } catch {
+        console.error(`[gemini] Health check: process ${proc.pid} is dead (likely OOM killed)`);
+        emitActivity(`❌ Process died unexpectedly (pid ${proc.pid})`);
+
+        alive = false;
+        proc = null;
+        stopHealthCheck();
+
+        const pending = responseResolvers;
+        responseResolvers = [];
+        for (const { resolve } of pending) {
+          if (accumulatedText) {
+            resolve(accumulatedText);
+          } else {
+            resolve("[Gemini process was killed unexpectedly (possibly OOM). Try again.]");
+          }
+        }
+        accumulatedText = "";
+
+        for (const cb of exitCallbacks) cb();
+      }
+    }, 20_000);
+  }
+
+  function stopHealthCheck(): void {
+    if (healthCheckTimer) {
+      clearInterval(healthCheckTimer);
+      healthCheckTimer = null;
+    }
+  }
 
   function emitActivity(line: string): void {
     for (const cb of activityCallbacks) cb(line);
@@ -70,6 +112,7 @@ export function createGeminiManager(config: Config): LLMManager {
     accumulatedText = "";
     spawnedAt = Date.now();
     lastActivityAt = Date.now();
+    startHealthCheck();
 
     console.log(`[gemini] Spawned process (pid: ${proc.pid})`);
     emitActivity(`⚡ gemini spawned (pid ${proc.pid})`);
@@ -79,6 +122,7 @@ export function createGeminiManager(config: Config): LLMManager {
 
     proc.exited.then((code) => {
       alive = false;
+      stopHealthCheck();
 
       if (code !== 0) {
         console.error(`[gemini] Process exited with code ${code}`);
@@ -316,6 +360,7 @@ export function createGeminiManager(config: Config): LLMManager {
     if (!proc || !alive) return;
 
     alive = false;
+    stopHealthCheck();
 
     try {
       proc.kill("SIGTERM");
