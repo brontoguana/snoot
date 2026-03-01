@@ -10,6 +10,13 @@ import { createProxy } from "./proxy.js";
 const SNOOT_SRC = import.meta.filename;
 const IS_COMPILED = SNOOT_SRC.startsWith("/$bunfs/");
 const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
+
+// Ensure ~/.local/bin is in PATH — cron @reboot entries inherit a minimal PATH
+// that may not include user directories where claude/gemini CLIs are installed.
+const LOCAL_BIN = resolve(homedir(), ".local", "bin");
+if (!process.env.PATH?.split(":").includes(LOCAL_BIN)) {
+  process.env.PATH = `${LOCAL_BIN}:${process.env.PATH || ""}`;
+}
 const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
 
 // Build a command to spawn ourselves.
@@ -219,7 +226,7 @@ function handleCron(): never {
     const selfCmd = IS_COMPILED
       ? shellQuote(process.execPath)
       : `${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)}`;
-    const entry = `@reboot cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
+    const entry = `@reboot export PATH="${LOCAL_BIN}:$PATH" && cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
     newEntries.push(entry);
     console.log(`  ${inst.channel} — added`);
   }

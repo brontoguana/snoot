@@ -35,12 +35,21 @@ else
   echo "  Snoot will work once claude is on your PATH."
 fi
 
-# Check PATH
+# Ensure ~/.local/bin is in PATH for this session and future shells
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
   echo
   echo "⚠ ~/.local/bin is not in your PATH. Add this to your shell profile:"
   echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
+
+# Ensure claude is discoverable: add ~/.local/bin to shell profile if not present
+for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+  if [ -f "$profile" ] && ! grep -q 'export PATH=.*\.local/bin' "$profile" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$profile"
+    echo "✓ Added ~/.local/bin to PATH in $(basename "$profile")"
+    break
+  fi
+done
 
 echo
 echo "Done! Next steps:"
