@@ -8,6 +8,7 @@ export interface Config {
   userSessionId: string;
   mode: Mode;
   backend: Backend;
+  model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
   budgetUsd?: number; // undefined = no budget limit
   compactAt: number; // trigger compaction when recent pairs exceed this
   windowSize: number; // keep this many pairs after compaction

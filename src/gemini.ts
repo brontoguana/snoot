@@ -95,8 +95,13 @@ export function createGeminiManager(config: Config): LLMManager {
       "gemini",
       "-o", "stream-json",
       "--yolo",
-      "-p", fullPrompt,
     ];
+
+    if (config.model) {
+      args.push("-m", config.model);
+    }
+
+    args.push("-p", fullPrompt);
 
     const env = { ...process.env };
 

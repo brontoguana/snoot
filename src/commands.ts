@@ -26,6 +26,7 @@ export function handleCommand(
           `  /mode <chat|research|coding> — switch mode (current: ${config.mode})`,
           `  /claude — switch to Claude backend`,
           `  /gemini — switch to Gemini backend`,
+          `  /model <name> — switch model (e.g. opus, sonnet, gemini-2.5-pro)`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate avatar from description",
@@ -72,6 +73,7 @@ export function handleCommand(
       return {
         response: [
           `Backend: ${config.backend}`,
+          `Model: ${config.model || "default"}`,
           `Mode: ${config.mode}`,
           `${statusName}: ${llm.isAlive() ? "processing" : "idle"}`,
           `Messages: ${state.totalPairs} total, ${context.getRecent().length} in window`,

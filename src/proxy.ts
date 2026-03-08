@@ -196,6 +196,28 @@ export function createProxy(config: Config) {
       return;
     }
 
+    // /model — switch model (bypass queue)
+    const modelMatch = trimmed.match(/^\/model\s*(.*)/i);
+    if (modelMatch !== null) {
+      const modelArg = modelMatch[1].trim();
+      if (!modelArg) {
+        const current = config.model || "default";
+        sessionClient.send(`Current model: ${current}. Usage: /model <name> or /model default`).catch(() => {});
+        return;
+      }
+      const newModel = modelArg.toLowerCase() === "default" ? undefined : modelArg;
+      if (newModel === config.model) {
+        sessionClient.send(`Already using ${newModel || "default"} model.`).catch(() => {});
+        return;
+      }
+      config.model = newModel;
+      if (llm.isAlive()) llm.kill();
+      const label = newModel || "default";
+      watchLog(`🔄 Model → ${label}`);
+      sessionClient.send(`Model set to ${label}. Next message will use it.`).catch(() => {});
+      return;
+    }
+
     // All slash commands bypass the queue so they respond even while LLM is busy
     // Exception: /profile <desc> goes to the LLM for avatar generation
     if (trimmed.startsWith("/") && !trimmed.match(/^\/profile\s+/i)) {

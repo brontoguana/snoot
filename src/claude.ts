@@ -104,6 +104,10 @@ export function createClaudeManager(config: Config): LLMManager {
       "--no-session-persistence",
     ];
 
+    if (config.model) {
+      args.push("--model", config.model);
+    }
+
     if (config.budgetUsd !== undefined) {
       args.push("--max-budget-usd", config.budgetUsd.toString());
     }
