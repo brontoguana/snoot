@@ -18,20 +18,31 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+function isNetworkError(err: unknown): boolean {
+  const name = err?.constructor?.name ?? "";
+  const msg = err instanceof Error ? err.message : String(err);
+  return name.includes("Fetch") || name.includes("Network")
+    || /fetch|network|snode|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT|timed out/i.test(msg);
+}
+
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  try {
-    return await withTimeout(fn(), SEND_TIMEOUT, label);
-  } catch (err) {
-    const name = err?.constructor?.name ?? "";
-    const msg = err instanceof Error ? err.message : String(err);
-    // Retry once on network-level or timeout errors
-    if (name.includes("Fetch") || name.includes("Network") || msg.includes("fetch") || msg.includes("network") || msg.includes("timed out")) {
-      console.error(`[session] ${label} failed (${msg}), retrying in 30s...`);
-      await Bun.sleep(RETRY_DELAY);
+  const SEND_RETRY_DELAYS = [5, 15, 30, 60]; // seconds — up to 4 retries
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= SEND_RETRY_DELAYS.length; attempt++) {
+    try {
       return await withTimeout(fn(), SEND_TIMEOUT, label);
+    } catch (err) {
+      lastErr = err;
+      if (!isNetworkError(err) || attempt >= SEND_RETRY_DELAYS.length) {
+        throw err;
+      }
+      const delay = SEND_RETRY_DELAYS[attempt];
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[session] ${label} failed (${msg}), retrying in ${delay}s (attempt ${attempt + 1}/${SEND_RETRY_DELAYS.length})...`);
+      await Bun.sleep(delay * 1000);
     }
-    throw err;
   }
+  throw lastErr; // shouldn't reach here
 }
 
 interface Identity {
@@ -77,11 +88,28 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     }
   }
 
-  function startListening(onMessage: (msg: IncomingMessage) => void): void {
+  async function startListening(onMessage: (msg: IncomingMessage) => void): Promise<void> {
     const startedAt = Date.now();
     const seenTimestamps = new Set<number>();
 
-    session.addPoller(new Poller());
+    // Retry poller connection with exponential backoff — handles boot before
+    // network is ready and transient network outages.
+    const POLLER_RETRY_DELAYS = [5, 10, 15, 30, 30, 60, 60, 60, 120, 120, 120, 300]; // seconds
+    let pollerConnected = false;
+    for (let attempt = 0; !pollerConnected; attempt++) {
+      try {
+        session.addPoller(new Poller());
+        pollerConnected = true;
+        if (attempt > 0) {
+          console.log(`[session] Poller connected after ${attempt + 1} attempts`);
+        }
+      } catch (err) {
+        const delay = POLLER_RETRY_DELAYS[Math.min(attempt, POLLER_RETRY_DELAYS.length - 1)];
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[session] Poller failed (attempt ${attempt + 1}): ${msg} — retrying in ${delay}s`);
+        await Bun.sleep(delay * 1000);
+      }
+    }
 
     // Re-upload avatar in background so the file server URL stays fresh.
     // The metadata restore above covers the immediate need (first messages),

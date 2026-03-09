@@ -622,11 +622,26 @@ function redirectToLog(logFile: string): void {
 }
 
 async function main(): Promise<void> {
+  // Catch network errors from Session internals instead of crashing.
+  // Session's Poller can throw unhandled rejections when snode fetches fail
+  // (e.g., network blip, DNS failure, boot before network ready).
   process.on("uncaughtException", (err) => {
-    console.error("[FATAL] Uncaught exception:", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    const isNetwork = /fetch|snode|network|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT/i.test(msg);
+    if (isNetwork) {
+      console.error("[session] Network error (non-fatal, will retry):", msg);
+    } else {
+      console.error("[FATAL] Uncaught exception:", err);
+    }
   });
   process.on("unhandledRejection", (reason) => {
-    console.error("[FATAL] Unhandled rejection:", reason);
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const isNetwork = /fetch|snode|network|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT/i.test(msg);
+    if (isNetwork) {
+      console.error("[session] Network rejection (non-fatal, will retry):", msg);
+    } else {
+      console.error("[FATAL] Unhandled rejection:", reason);
+    }
   });
 
   // Check if we're the daemon child (re-spawned in background)
@@ -710,7 +725,23 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => proxy.shutdown());
   process.on("SIGTERM", () => proxy.shutdown());
 
-  await proxy.start();
+  // Retry proxy.start() with backoff — handles boot before network ready
+  const START_RETRY_DELAYS = [10, 15, 30, 30, 60, 60, 120, 120, 300, 300]; // seconds
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await proxy.start();
+      break; // success
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (attempt >= START_RETRY_DELAYS.length) {
+        console.error(`[startup] Failed after ${attempt + 1} attempts, giving up:`, msg);
+        process.exit(1);
+      }
+      const delay = START_RETRY_DELAYS[attempt];
+      console.error(`[startup] Start failed (attempt ${attempt + 1}): ${msg} — retrying in ${delay}s`);
+      await Bun.sleep(delay * 1000);
+    }
+  }
 
   // Keep process alive — don't rely on Poller alone to hold the event loop
   await new Promise(() => {});

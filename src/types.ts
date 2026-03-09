@@ -110,7 +110,7 @@ export interface IncomingMessage {
 }
 
 export interface SessionClient {
-  startListening(onMessage: (msg: IncomingMessage) => void): void;
+  startListening(onMessage: (msg: IncomingMessage) => void): Promise<void>;
   send(text: string): Promise<void>;
   sendImage(png: Uint8Array, caption?: string): Promise<void>;
   setAvatar(png: Uint8Array): Promise<void>;

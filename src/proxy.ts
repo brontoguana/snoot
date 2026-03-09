@@ -131,7 +131,7 @@ export function createProxy(config: Config) {
 
     wireLLMCallbacks();
 
-    sessionClient.startListening(onMessage);
+    await sessionClient.startListening(onMessage);
     console.log(`[proxy] Ready. Mode: ${config.mode}, Backend: ${config.backend}`);
     watchLog(`🟢 Snoot online — ${config.backend} / ${config.mode} / ${config.workDir}`);
 
