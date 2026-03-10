@@ -108,6 +108,10 @@ export function createClaudeManager(config: Config): LLMManager {
       args.push("--model", config.model);
     }
 
+    if (config.effort !== undefined) {
+      args.push("--thinking-budget", config.effort.toString());
+    }
+
     if (config.budgetUsd !== undefined) {
       args.push("--max-budget-usd", config.budgetUsd.toString());
     }

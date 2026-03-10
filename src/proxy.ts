@@ -121,6 +121,82 @@ export function createProxy(config: Config) {
     return `Switched to ${backend}. Next message will use ${backend}.`;
   }
 
+  const EFFORT_PRESETS: Record<string, number> = {
+    high: 32768,
+    medium: 10000,
+    low: 2048,
+  };
+
+  function handleEffortCommand(arg: string): void {
+    if (!arg) {
+      const current = config.effort !== undefined
+        ? `${config.effort} tokens${Object.entries(EFFORT_PRESETS).find(([, v]) => v === config.effort)?.[0] ? ` (${Object.entries(EFFORT_PRESETS).find(([, v]) => v === config.effort)![0]})` : ""}`
+        : "default";
+      sessionClient.send(`Current effort: ${current}\nUsage: /effort <high|medium|low|off|default> or /effort <number>`).catch(() => {});
+      return;
+    }
+
+    if (config.backend === "gemini") {
+      sessionClient.send("Effort/thinking budget is only supported for Claude.").catch(() => {});
+      return;
+    }
+
+    const lower = arg.toLowerCase();
+
+    if (lower === "default") {
+      if (config.effort === undefined) {
+        sessionClient.send("Already using default effort.").catch(() => {});
+        return;
+      }
+      config.effort = undefined;
+      if (llm.isAlive()) llm.kill();
+      watchLog("🔄 Effort → default");
+      sessionClient.send("Effort reset to default. Next message will use it.").catch(() => {});
+      return;
+    }
+
+    if (lower === "off" || lower === "none") {
+      if (config.effort === 0) {
+        sessionClient.send("Effort already off.").catch(() => {});
+        return;
+      }
+      config.effort = 0;
+      if (llm.isAlive()) llm.kill();
+      watchLog("🔄 Effort → off");
+      sessionClient.send("Extended thinking disabled. Next message will use it.").catch(() => {});
+      return;
+    }
+
+    if (EFFORT_PRESETS[lower] !== undefined) {
+      const tokens = EFFORT_PRESETS[lower];
+      if (config.effort === tokens) {
+        sessionClient.send(`Already set to ${lower} (${tokens} tokens).`).catch(() => {});
+        return;
+      }
+      config.effort = tokens;
+      if (llm.isAlive()) llm.kill();
+      watchLog(`🔄 Effort → ${lower} (${tokens} tokens)`);
+      sessionClient.send(`Effort set to ${lower} (${tokens} tokens). Next message will use it.`).catch(() => {});
+      return;
+    }
+
+    // Try parsing as a raw number
+    const num = parseInt(arg, 10);
+    if (!isNaN(num) && num >= 0) {
+      if (config.effort === num) {
+        sessionClient.send(`Already set to ${num} tokens.`).catch(() => {});
+        return;
+      }
+      config.effort = num === 0 ? 0 : num;
+      if (llm.isAlive()) llm.kill();
+      watchLog(`🔄 Effort → ${num} tokens`);
+      sessionClient.send(`Effort set to ${num} tokens. Next message will use it.`).catch(() => {});
+      return;
+    }
+
+    sessionClient.send("Invalid effort. Use: high, medium, low, off, default, or a number.").catch(() => {});
+  }
+
   async function start(): Promise<void> {
     try {
       await context.load();
@@ -215,6 +291,13 @@ export function createProxy(config: Config) {
       const label = newModel || "default";
       watchLog(`🔄 Model → ${label}`);
       sessionClient.send(`Model set to ${label}. Next message will use it.`).catch(() => {});
+      return;
+    }
+
+    // /effort — set thinking budget (bypass queue)
+    const effortMatch = trimmed.match(/^\/effort\s*(.*)/i);
+    if (effortMatch !== null) {
+      handleEffortCommand(effortMatch[1].trim());
       return;
     }
 

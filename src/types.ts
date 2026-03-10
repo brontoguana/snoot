@@ -9,6 +9,7 @@ export interface Config {
   mode: Mode;
   backend: Backend;
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
+  effort?: number; // thinking budget in tokens (Claude only)
   budgetUsd?: number; // undefined = no budget limit
   compactAt: number; // trigger compaction when recent pairs exceed this
   windowSize: number; // keep this many pairs after compaction
