@@ -27,7 +27,7 @@ export function handleCommand(
           `  /claude — switch to Claude backend`,
           `  /gemini — switch to Gemini backend`,
           `  /model <name> — switch model (e.g. opus, sonnet, gemini-2.5-pro)`,
-          `  /effort <level> — set thinking budget (high/medium/low/off/default or a number)`,
+          `  /effort <level> — set effort (low/medium/high/max/default)`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate avatar from description",

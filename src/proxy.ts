@@ -121,29 +121,23 @@ export function createProxy(config: Config) {
     return `Switched to ${backend}. Next message will use ${backend}.`;
   }
 
-  const EFFORT_PRESETS: Record<string, number> = {
-    high: 32768,
-    medium: 10000,
-    low: 2048,
-  };
+  const VALID_EFFORTS = ["low", "medium", "high", "max"];
 
   function handleEffortCommand(arg: string): void {
     if (!arg) {
-      const current = config.effort !== undefined
-        ? `${config.effort} tokens${Object.entries(EFFORT_PRESETS).find(([, v]) => v === config.effort)?.[0] ? ` (${Object.entries(EFFORT_PRESETS).find(([, v]) => v === config.effort)![0]})` : ""}`
-        : "default";
-      sessionClient.send(`Current effort: ${current}\nUsage: /effort <high|medium|low|off|default> or /effort <number>`).catch(() => {});
+      const current = config.effort ?? "default";
+      sessionClient.send(`Current effort: ${current}\nUsage: /effort <low|medium|high|max|default>`).catch(() => {});
       return;
     }
 
     if (config.backend === "gemini") {
-      sessionClient.send("Effort/thinking budget is only supported for Claude.").catch(() => {});
+      sessionClient.send("Effort is only supported for Claude.").catch(() => {});
       return;
     }
 
     const lower = arg.toLowerCase();
 
-    if (lower === "default") {
+    if (lower === "default" || lower === "off" || lower === "none") {
       if (config.effort === undefined) {
         sessionClient.send("Already using default effort.").catch(() => {});
         return;
@@ -155,46 +149,19 @@ export function createProxy(config: Config) {
       return;
     }
 
-    if (lower === "off" || lower === "none") {
-      if (config.effort === 0) {
-        sessionClient.send("Effort already off.").catch(() => {});
+    if (VALID_EFFORTS.includes(lower)) {
+      if (config.effort === lower) {
+        sessionClient.send(`Already set to ${lower}.`).catch(() => {});
         return;
       }
-      config.effort = 0;
+      config.effort = lower;
       if (llm.isAlive()) llm.kill();
-      watchLog("🔄 Effort → off");
-      sessionClient.send("Extended thinking disabled. Next message will use it.").catch(() => {});
+      watchLog(`🔄 Effort → ${lower}`);
+      sessionClient.send(`Effort set to ${lower}. Next message will use it.`).catch(() => {});
       return;
     }
 
-    if (EFFORT_PRESETS[lower] !== undefined) {
-      const tokens = EFFORT_PRESETS[lower];
-      if (config.effort === tokens) {
-        sessionClient.send(`Already set to ${lower} (${tokens} tokens).`).catch(() => {});
-        return;
-      }
-      config.effort = tokens;
-      if (llm.isAlive()) llm.kill();
-      watchLog(`🔄 Effort → ${lower} (${tokens} tokens)`);
-      sessionClient.send(`Effort set to ${lower} (${tokens} tokens). Next message will use it.`).catch(() => {});
-      return;
-    }
-
-    // Try parsing as a raw number
-    const num = parseInt(arg, 10);
-    if (!isNaN(num) && num >= 0) {
-      if (config.effort === num) {
-        sessionClient.send(`Already set to ${num} tokens.`).catch(() => {});
-        return;
-      }
-      config.effort = num === 0 ? 0 : num;
-      if (llm.isAlive()) llm.kill();
-      watchLog(`🔄 Effort → ${num} tokens`);
-      sessionClient.send(`Effort set to ${num} tokens. Next message will use it.`).catch(() => {});
-      return;
-    }
-
-    sessionClient.send("Invalid effort. Use: high, medium, low, off, default, or a number.").catch(() => {});
+    sessionClient.send("Invalid effort. Use: low, medium, high, max, or default.").catch(() => {});
   }
 
   async function start(): Promise<void> {
