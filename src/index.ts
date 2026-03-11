@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
 import "@session.js/bun-network";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync } from "fs";
-import { resolve, dirname, basename } from "path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync, watch as fsWatchFile } from "fs";
+import { resolve, dirname, basename, parse as parsePath, delimiter as PATH_DELIMITER } from "path";
 import { homedir } from "os";
 import type { Config, Mode, Backend } from "./types.js";
 import { createProxy } from "./proxy.js";
@@ -11,11 +11,15 @@ const SNOOT_SRC = import.meta.filename;
 const IS_COMPILED = SNOOT_SRC.startsWith("/$bunfs/");
 const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
 
-// Ensure ~/.local/bin is in PATH — cron @reboot entries inherit a minimal PATH
+const IS_WINDOWS = process.platform === "win32";
+
+// Ensure CLI tools directory is in PATH — cron/@reboot entries inherit a minimal PATH
 // that may not include user directories where claude/gemini CLIs are installed.
-const LOCAL_BIN = resolve(homedir(), ".local", "bin");
-if (!process.env.PATH?.split(":").includes(LOCAL_BIN)) {
-  process.env.PATH = `${LOCAL_BIN}:${process.env.PATH || ""}`;
+const LOCAL_BIN = IS_WINDOWS
+  ? resolve(process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local"), "snoot")
+  : resolve(homedir(), ".local", "bin");
+if (!process.env.PATH?.split(PATH_DELIMITER).includes(LOCAL_BIN)) {
+  process.env.PATH = `${LOCAL_BIN}${PATH_DELIMITER}${process.env.PATH || ""}`;
 }
 const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
 
@@ -39,7 +43,8 @@ interface InstanceInfo {
 function detectProjectName(cwd: string): string {
   // Walk up from cwd looking for .git or package.json
   let dir = cwd;
-  while (dir !== "/") {
+  const { root } = parsePath(dir);
+  while (dir !== root) {
     if (existsSync(resolve(dir, ".git"))) {
       return basename(dir);
     }
@@ -175,13 +180,19 @@ function handlePs(): never {
 }
 
 function shellQuote(s: string): string {
+  if (IS_WINDOWS) {
+    if (/^[a-zA-Z0-9._\-\/\\=:@]+$/.test(s)) return s;
+    return `"${s.replace(/"/g, '""')}"`;
+  }
   if (/^[a-zA-Z0-9._\-\/=:@]+$/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+// --- Boot persistence (cron on Linux, scheduled tasks on Windows) ---
+
 function getCrontab(): string {
   const result = Bun.spawnSync(["crontab", "-l"]);
-  if (result.exitCode !== 0) return ""; // no crontab yet
+  if (result.exitCode !== 0) return "";
   return result.stdout.toString();
 }
 
@@ -196,6 +207,13 @@ function setCrontab(content: string): boolean {
   return true;
 }
 
+function windowsTaskExists(channel: string): boolean {
+  const result = Bun.spawnSync(["schtasks", "/query", "/tn", `snoot-${channel}`], {
+    stdout: "pipe", stderr: "pipe",
+  });
+  return result.exitCode === 0;
+}
+
 function handleCron(): never {
   const instances = loadInstances();
 
@@ -204,81 +222,158 @@ function handleCron(): never {
     process.exit(1);
   }
 
-  const currentCrontab = getCrontab();
+  if (IS_WINDOWS) {
+    // Windows: create scheduled tasks with startup .bat files
+    const batDir = resolve(GLOBAL_SNOOT_DIR, "startup");
+    mkdirSync(batDir, { recursive: true });
+    let added = 0;
 
-  // Find which channels already have cron entries
-  const existingChannels = new Set<string>();
-  for (const line of currentCrontab.split("\n")) {
-    const match = line.match(/# snoot:(.+)$/);
-    if (match) existingChannels.add(match[1]);
-  }
+    for (const inst of instances) {
+      if (windowsTaskExists(inst.channel)) {
+        console.log(`  ${inst.channel} — already scheduled, skipping`);
+        continue;
+      }
 
-  const bunPath = process.execPath;
-  const newEntries: string[] = [];
+      const quotedArgs = inst.args.map(shellQuote).join(" ");
+      const selfPath = IS_COMPILED
+        ? `"${process.execPath}"`
+        : `"${process.execPath}" "${SNOOT_SRC}"`;
 
-  for (const inst of instances) {
-    if (existingChannels.has(inst.channel)) {
-      console.log(`  ${inst.channel} — already in crontab, skipping`);
-      continue;
+      // Write a .bat file that cds to the project and launches snoot
+      const batPath = resolve(batDir, `${inst.channel}.bat`);
+      const batContent = `@echo off\r\ncd /d "${inst.cwd}"\r\n${selfPath} ${quotedArgs}\r\n`;
+      writeFileSync(batPath, batContent);
+
+      const result = Bun.spawnSync([
+        "schtasks", "/create",
+        "/tn", `snoot-${inst.channel}`,
+        "/tr", `"${batPath}"`,
+        "/sc", "onlogon",
+        "/f",
+      ], { stdout: "pipe", stderr: "pipe" });
+
+      if (result.exitCode === 0) {
+        console.log(`  ${inst.channel} — added`);
+        added++;
+      } else {
+        console.error(`  ${inst.channel} — failed: ${result.stderr.toString().trim()}`);
+      }
     }
 
-    const quotedArgs = inst.args.map(shellQuote).join(" ");
-    const selfCmd = IS_COMPILED
-      ? shellQuote(process.execPath)
-      : `${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)}`;
-    const entry = `@reboot export PATH="${LOCAL_BIN}:$PATH" && cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
-    newEntries.push(entry);
-    console.log(`  ${inst.channel} — added`);
+    if (added === 0) {
+      console.log("All instances already scheduled.");
+    } else {
+      console.log(`Added ${added} scheduled task(s).`);
+    }
+  } else {
+    // Linux: add @reboot cron entries
+    const currentCrontab = getCrontab();
+
+    const existingChannels = new Set<string>();
+    for (const line of currentCrontab.split("\n")) {
+      const match = line.match(/# snoot:(.+)$/);
+      if (match) existingChannels.add(match[1]);
+    }
+
+    const bunPath = process.execPath;
+    const newEntries: string[] = [];
+
+    for (const inst of instances) {
+      if (existingChannels.has(inst.channel)) {
+        console.log(`  ${inst.channel} — already in crontab, skipping`);
+        continue;
+      }
+
+      const quotedArgs = inst.args.map(shellQuote).join(" ");
+      const selfCmd = IS_COMPILED
+        ? shellQuote(process.execPath)
+        : `${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)}`;
+      const entry = `@reboot export PATH="${LOCAL_BIN}:$PATH" && cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
+      newEntries.push(entry);
+      console.log(`  ${inst.channel} — added`);
+    }
+
+    if (newEntries.length === 0) {
+      console.log("All instances already in crontab.");
+      process.exit(0);
+    }
+
+    const base = currentCrontab.trimEnd();
+    const updatedCrontab = (base ? base + "\n" : "") + newEntries.join("\n") + "\n";
+
+    if (!setCrontab(updatedCrontab)) {
+      process.exit(1);
+    }
+
+    console.log(`Added ${newEntries.length} entry/entries to crontab.`);
   }
 
-  if (newEntries.length === 0) {
-    console.log("All instances already in crontab.");
-    process.exit(0);
-  }
-
-  const base = currentCrontab.trimEnd();
-  const updatedCrontab = (base ? base + "\n" : "") + newEntries.join("\n") + "\n";
-
-  if (!setCrontab(updatedCrontab)) {
-    process.exit(1);
-  }
-
-  console.log(`Added ${newEntries.length} entry/entries to crontab.`);
   process.exit(0);
 }
 
 function handleNocron(): never {
-  const currentCrontab = getCrontab();
+  if (IS_WINDOWS) {
+    // Windows: delete snoot-* scheduled tasks and .bat files
+    const instances = loadInstances();
+    const batDir = resolve(GLOBAL_SNOOT_DIR, "startup");
+    let removed = 0;
 
-  if (!currentCrontab.trim()) {
-    console.log("No crontab found.");
-    process.exit(0);
-  }
-
-  const lines = currentCrontab.split("\n");
-  const kept: string[] = [];
-  let removed = 0;
-
-  for (const line of lines) {
-    const match = line.match(/# snoot:(.+)$/);
-    if (match) {
-      console.log(`  Removed: ${match[1]}`);
-      removed++;
-    } else {
-      kept.push(line);
+    for (const inst of instances) {
+      if (windowsTaskExists(inst.channel)) {
+        const result = Bun.spawnSync([
+          "schtasks", "/delete",
+          "/tn", `snoot-${inst.channel}`,
+          "/f",
+        ], { stdout: "pipe", stderr: "pipe" });
+        if (result.exitCode === 0) {
+          console.log(`  Removed: ${inst.channel}`);
+          removed++;
+        }
+      }
+      // Clean up .bat file
+      try { unlinkSync(resolve(batDir, `${inst.channel}.bat`)); } catch {}
     }
+
+    if (removed === 0) {
+      console.log("No snoot scheduled tasks found.");
+    } else {
+      console.log(`Removed ${removed} scheduled task(s).`);
+    }
+  } else {
+    // Linux: remove snoot @reboot entries from crontab
+    const currentCrontab = getCrontab();
+
+    if (!currentCrontab.trim()) {
+      console.log("No crontab found.");
+      process.exit(0);
+    }
+
+    const lines = currentCrontab.split("\n");
+    const kept: string[] = [];
+    let removed = 0;
+
+    for (const line of lines) {
+      const match = line.match(/# snoot:(.+)$/);
+      if (match) {
+        console.log(`  Removed: ${match[1]}`);
+        removed++;
+      } else {
+        kept.push(line);
+      }
+    }
+
+    if (removed === 0) {
+      console.log("No snoot entries found in crontab.");
+      process.exit(0);
+    }
+
+    if (!setCrontab(kept.join("\n"))) {
+      process.exit(1);
+    }
+
+    console.log(`Removed ${removed} snoot entry/entries from crontab.`);
   }
 
-  if (removed === 0) {
-    console.log("No snoot entries found in crontab.");
-    process.exit(0);
-  }
-
-  if (!setCrontab(kept.join("\n"))) {
-    process.exit(1);
-  }
-
-  console.log(`Removed ${removed} snoot entry/entries from crontab.`);
   process.exit(0);
 }
 
@@ -315,13 +410,6 @@ async function handleWatch(args: string[]): Promise<never> {
   console.log(`Watching snoot "${displayName}"... (Ctrl+C to stop)`);
   console.log(`Type a message and press Enter to send.\n`);
 
-  // Tail watch log for output
-  const child = Bun.spawn(["tail", "-f", "-n", "+1", watchLogPath], {
-    stdout: "inherit",
-    stderr: "inherit",
-    stdin: "ignore",
-  });
-
   // Read user input from terminal and write to inbox for proxy to pick up
   const { createInterface } = await import("readline");
   const rl = createInterface({
@@ -335,13 +423,46 @@ async function handleWatch(args: string[]): Promise<never> {
     appendFileSync(inboxPath, JSON.stringify({ text: trimmed, ts: Date.now() }) + "\n");
   });
 
-  process.on("SIGINT", () => {
-    rl.close();
-    child.kill();
-    process.exit(0);
-  });
+  if (IS_WINDOWS) {
+    // Pure TS file tail (no tail command on Windows)
+    const existing = readFileSync(watchLogPath, "utf-8");
+    process.stdout.write(existing);
+    let charOffset = existing.length;
 
-  await child.exited;
+    const watcher = fsWatchFile(watchLogPath, () => {
+      try {
+        const content = readFileSync(watchLogPath, "utf-8");
+        if (content.length > charOffset) {
+          process.stdout.write(content.slice(charOffset));
+          charOffset = content.length;
+        }
+      } catch {}
+    });
+
+    process.on("SIGINT", () => {
+      rl.close();
+      watcher.close();
+      process.exit(0);
+    });
+
+    await new Promise(() => {});
+  } else {
+    // Linux/macOS: use tail -f for efficient streaming
+    const child = Bun.spawn(["tail", "-f", "-n", "+1", watchLogPath], {
+      stdout: "inherit",
+      stderr: "inherit",
+      stdin: "ignore",
+    });
+
+    process.on("SIGINT", () => {
+      rl.close();
+      child.kill();
+      process.exit(0);
+    });
+
+    await child.exited;
+  }
+
   process.exit(0);
 }
 
@@ -427,8 +548,8 @@ Commands:
   restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
   watch <channel>       Watch live activity (tool use, spawns, responses) in real time.
   ps                    List all snoot instances, their status, and project directories.
-  cron                  Add @reboot cron entries for all registered instances.
-  nocron                Remove all snoot @reboot entries from crontab.
+  cron                  Add startup entries for all registered instances.
+  nocron                Remove all snoot startup entries.
   set-user <session-id> Save your Session ID globally (~/.snoot/user.json).
 `);
     process.exit(0);

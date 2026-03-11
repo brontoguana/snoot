@@ -11,7 +11,11 @@ ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
 if [ "$ARCH" != "x86_64" ] || [ "$OS" != "linux" ]; then
-  echo "Pre-built binaries are only available for Linux x86_64."
+  echo "This installer is for Linux x86_64."
+  echo ""
+  echo "For Windows, use PowerShell:"
+  echo "  irm https://raw.githubusercontent.com/brontoguana/snoot/main/install.ps1 | iex"
+  echo ""
   echo "For other platforms, build from source:"
   echo "  git clone https://github.com/$REPO.git"
   echo "  cd snoot && bun install && ./build.sh"
