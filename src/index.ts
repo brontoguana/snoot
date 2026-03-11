@@ -13,6 +13,10 @@ const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
 
 const IS_WINDOWS = process.platform === "win32";
 
+// In compiled mode, process.argv = [execPath, ...args] (no script path).
+// In interpreted mode, process.argv = [bun, script.ts, ...args].
+const ARGV_OFFSET = IS_COMPILED ? 1 : 2;
+
 // Ensure CLI tools directory is in PATH — cron/@reboot entries inherit a minimal PATH
 // that may not include user directories where claude/gemini CLIs are installed.
 const LOCAL_BIN = IS_WINDOWS
@@ -522,7 +526,7 @@ function resolveUserSessionId(userSessionId: string, baseDir: string): string {
 }
 
 async function parseArgs(): Promise<Config & { foreground: boolean }> {
-  const args = process.argv.slice(2);
+  const args = process.argv.slice(ARGV_OFFSET);
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
@@ -777,7 +781,7 @@ async function main(): Promise<void> {
 
     const logFd = openSync(logFile, "a");
 
-    const child = Bun.spawn(selfCommand(...process.argv.slice(2)), {
+    const child = Bun.spawn(selfCommand(...process.argv.slice(ARGV_OFFSET)), {
       cwd: process.cwd(),
       env: { ...process.env, SNOOT_DAEMON: "1" },
       stdout: logFd,
@@ -823,7 +827,7 @@ async function main(): Promise<void> {
   acquireLock(config.baseDir, config.channel);
 
   // Save launch args so "snoot restart" can re-launch with same config
-  const launchArgs = process.argv.slice(2).filter(a => a !== "restart");
+  const launchArgs = process.argv.slice(ARGV_OFFSET).filter(a => a !== "restart");
   writeFileSync(
     `${config.baseDir}/launch.json`,
     JSON.stringify({ args: launchArgs, cwd: process.cwd() })
