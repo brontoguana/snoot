@@ -604,6 +604,7 @@ Commands:
   let compactAt = 20;
   let windowSize = 15;
   let foreground = false;
+  let backendFromCli = false;
 
   for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
@@ -623,6 +624,7 @@ Commands:
           console.error(`Invalid backend: ${backend}. Choose: claude, gemini`);
           process.exit(1);
         }
+        backendFromCli = true;
         break;
       case "--budget":
         budgetUsd = parseFloat(args[++i] ?? "");
@@ -664,6 +666,20 @@ Commands:
     process.exit(1);
   }
 
+  // Load persisted settings (backend/model/effort) — CLI args override saved values
+  const settingsPath = `${baseDir}/settings.json`;
+  if (existsSync(settingsPath)) {
+    try {
+      const saved = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      if (!backendFromCli && saved.backend && ["claude", "gemini"].includes(saved.backend)) {
+        backend = saved.backend;
+      }
+      // model and effort are not CLI args, always restore from saved
+      if (saved.model) var savedModel: string | undefined = saved.model;
+      if (saved.effort) var savedEffort: string | undefined = saved.effort;
+    } catch {}
+  }
+
   // Resolve budget: --budget flag > global ~/.snoot/config.json > no limit
   if (budgetUsd === undefined) {
     const globalConfigFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
@@ -682,6 +698,8 @@ Commands:
     userSessionId,
     mode,
     backend,
+    model: savedModel,
+    effort: savedEffort,
     budgetUsd,
     compactAt,
     windowSize,
@@ -886,6 +904,8 @@ async function main(): Promise<void> {
   console.log(`Snoot starting (pid ${process.pid})...`);
   console.log(`  Channel: ${config.channel}`);
   console.log(`  Backend: ${config.backend}`);
+  console.log(`  Model: ${config.model || "default"}`);
+  console.log(`  Effort: ${config.effort || "default"}`);
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);

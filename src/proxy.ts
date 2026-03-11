@@ -31,6 +31,15 @@ export function createProxy(config: Config) {
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
   const watchLogPath = join(config.baseDir, "watch.log");
+  const settingsPath = join(config.baseDir, "settings.json");
+
+  /** Persist backend/model/effort so they survive restarts */
+  function saveSettings(): void {
+    const data: Record<string, string> = { backend: config.backend };
+    if (config.model) data.model = config.model;
+    if (config.effort) data.effort = config.effort;
+    try { writeFileSync(settingsPath, JSON.stringify(data)); } catch {}
+  }
 
   // Truncate watch log on startup so it only shows the current session
   writeFileSync(watchLogPath, "");
@@ -118,6 +127,7 @@ export function createProxy(config: Config) {
     config.backend = backend;
     llm = createLLM(config);
     wireLLMCallbacks();
+    saveSettings();
     return `Switched to ${backend}. Next message will use ${backend}.`;
   }
 
@@ -154,6 +164,7 @@ export function createProxy(config: Config) {
       }
       config.effort = undefined;
       if (llm.isAlive()) llm.kill();
+      saveSettings();
       watchLog("🔄 Effort → default");
       sessionClient.send("Effort reset to default. Next message will use it.").catch(() => {});
       return;
@@ -166,6 +177,7 @@ export function createProxy(config: Config) {
       }
       config.effort = lower;
       if (llm.isAlive()) llm.kill();
+      saveSettings();
       watchLog(`🔄 Effort → ${lower}`);
       sessionClient.send(`Effort set to ${lower}. Next message will use it.`).catch(() => {});
       return;
@@ -341,6 +353,7 @@ export function createProxy(config: Config) {
       }
       config.model = newModel;
       if (llm.isAlive()) llm.kill();
+      saveSettings();
       const label = newModel || "default";
       watchLog(`🔄 Model → ${label}`);
       sessionClient.send(`Model set to ${label}. Next message will use it.`).catch(() => {});
