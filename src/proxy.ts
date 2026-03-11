@@ -6,7 +6,7 @@ import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
-import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks } from "./profile.js";
+import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks, initResvg } from "./profile.js";
 
 function createLLM(config: Config): LLMManager {
   return config.backend === "gemini"
@@ -165,6 +165,11 @@ export function createProxy(config: Config) {
   }
 
   async function start(): Promise<void> {
+    try {
+      await initResvg();
+    } catch (err) {
+      console.error("[proxy] Failed to init resvg WASM:", err);
+    }
     try {
       await context.load();
     } catch (err) {

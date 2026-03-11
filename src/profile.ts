@@ -1,8 +1,20 @@
-import { Resvg } from "@resvg/resvg-js";
+import { initWasm, Resvg } from "@resvg/resvg-wasm";
+// @ts-ignore — Bun embed: returns a $bunfs path at runtime in compiled binaries
+import resvgWasmPath from "../node_modules/@resvg/resvg-wasm/index_bg.wasm" with { type: "file" };
 import { readFile, unlink } from "fs/promises";
 
 const AVATAR_SIZE = 256;
 const INLINE_SVG_WIDTH = 800;
+
+let wasmInitialized = false;
+
+/** Initialize the WASM module — must be called before any SVG rendering */
+export async function initResvg(): Promise<void> {
+  if (wasmInitialized) return;
+  const wasmBytes = await Bun.file(resvgWasmPath).arrayBuffer();
+  await initWasm(wasmBytes);
+  wasmInitialized = true;
+}
 
 /** Build the message to send to Claude for avatar generation */
 export function buildProfilePrompt(description: string, svgPath: string): string {
