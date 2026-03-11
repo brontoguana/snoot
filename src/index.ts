@@ -786,30 +786,70 @@ async function main(): Promise<void> {
     const logFile = resolve(`.snoot/${config.channel}/snoot.log`);
     mkdirSync(dirname(logFile), { recursive: true });
 
-    const logFd = openSync(logFile, "a");
+    if (IS_WINDOWS) {
+      // Windows: use PowerShell Start-Process to create a truly detached process.
+      // Bun.spawn + child.unref() doesn't work — the child shares the parent's
+      // console and gets killed when the parent exits.
+      const selfArgs = selfCommand(...process.argv.slice(ARGV_OFFSET));
+      const exe = selfArgs[0];
+      const argList = selfArgs.slice(1).map(a => shellQuote(a)).join(" ");
 
-    const child = Bun.spawn(selfCommand(...process.argv.slice(ARGV_OFFSET)), {
-      cwd: process.cwd(),
-      env: { ...process.env, SNOOT_DAEMON: "1" },
-      stdout: logFd,
-      stderr: logFd,
-      stdin: "ignore",
-    });
+      // Build PowerShell command that sets SNOOT_DAEMON=1 then launches the process
+      const psCmd = [
+        `$env:SNOOT_DAEMON='1';`,
+        `Start-Process`,
+        `-FilePath '${exe.replace(/'/g, "''")}'`,
+        ...(argList ? [`-ArgumentList '${argList.replace(/'/g, "''")}'`] : []),
+        `-WorkingDirectory '${process.cwd().replace(/'/g, "''")}'`,
+        `-WindowStyle Hidden`,
+        `-RedirectStandardOutput '${logFile.replace(/'/g, "''")}'`,
+        `-RedirectStandardError '${logFile.replace(/'/g, "''")}'`,
+      ].join(" ");
 
-    // Detach from parent — unref so parent can exit
-    child.unref();
+      Bun.spawnSync(["powershell", "-NoProfile", "-Command", psCmd], {
+        cwd: process.cwd(),
+        stdout: "inherit",
+        stderr: "inherit",
+      });
 
-    // Brief pause to check it didn't die immediately
-    await Bun.sleep(1500);
+      // Brief pause then verify the child started
+      await Bun.sleep(2000);
 
-    try {
-      process.kill(child.pid, 0); // test if alive
-    } catch {
-      console.error(`Snoot failed to start. Check ${logFile} for details.`);
-      process.exit(1);
+      // Check if PID file was written by the child
+      const pidFile = resolve(`.snoot/${config.channel}/snoot.pid`);
+      if (existsSync(pidFile)) {
+        const childPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+        console.log(`Snoot started in background (pid ${childPid})`);
+      } else {
+        console.log(`Snoot starting in background...`);
+      }
+    } else {
+      // Linux/macOS: Bun.spawn + unref works fine
+      const logFd = openSync(logFile, "a");
+
+      const child = Bun.spawn(selfCommand(...process.argv.slice(ARGV_OFFSET)), {
+        cwd: process.cwd(),
+        env: { ...process.env, SNOOT_DAEMON: "1" },
+        stdout: logFd,
+        stderr: logFd,
+        stdin: "ignore",
+      });
+
+      child.unref();
+
+      // Brief pause to check it didn't die immediately
+      await Bun.sleep(1500);
+
+      try {
+        process.kill(child.pid, 0); // test if alive
+      } catch {
+        console.error(`Snoot failed to start. Check ${logFile} for details.`);
+        process.exit(1);
+      }
+
+      console.log(`Snoot started in background (pid ${child.pid})`);
     }
 
-    console.log(`Snoot started in background (pid ${child.pid})`);
     console.log(`  Channel: ${config.channel}`);
     console.log(`  Log: ${logFile}`);
     console.log(`  Watch: snoot watch ${config.channel}`);

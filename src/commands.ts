@@ -32,6 +32,7 @@ export function handleCommand(
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate avatar from description",
           "  /profile + image — set attached image as avatar",
+          "  /btw <question> — side question (can read code, no edits)",
           "  /save <name> + attachment — save file to working directory",
           "  /overwrite <name> + attachment — same, but allows overwriting",
           "  /compact — force context compaction",

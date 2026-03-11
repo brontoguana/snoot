@@ -1,6 +1,6 @@
 import { join, resolve, extname } from "path";
 import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
-import type { Config, LLMManager, Backend, IncomingMessage, IncomingAttachment } from "./types.js";
+import type { Config, LLMManager, Backend, Mode, IncomingMessage, IncomingAttachment } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
@@ -126,7 +126,17 @@ export function createProxy(config: Config) {
   function handleEffortCommand(arg: string): void {
     if (!arg) {
       const current = config.effort ?? "default";
-      sessionClient.send(`Current effort: ${current}\nUsage: /effort <low|medium|high|max|default>`).catch(() => {});
+      const options = [
+        `Current effort: ${current}`,
+        "",
+        "Options:",
+        "  /effort low — minimal thinking",
+        "  /effort medium — balanced",
+        "  /effort high — deeper reasoning",
+        "  /effort max — maximum thinking",
+        "  /effort default — reset to default",
+      ];
+      sessionClient.send(options.join("\n")).catch(() => {});
       return;
     }
 
@@ -162,6 +172,43 @@ export function createProxy(config: Config) {
     }
 
     sessionClient.send("Invalid effort. Use: low, medium, high, max, or default.").catch(() => {});
+  }
+
+  async function handleBtw(question: string): Promise<void> {
+    watchLog(`💬 /btw: ${question.slice(0, 200)}`);
+    try {
+      await sessionClient.send("💬 thinking...");
+    } catch {}
+
+    // Spawn a throwaway LLM in research mode (read-only tools, no edits)
+    const btwConfig: Config = {
+      ...config,
+      mode: "research" as Mode,
+    };
+    const btwLlm = createLLM(btwConfig);
+
+    // Write a temp system prompt instructing no edits
+    const btwPromptFile = join(config.workDir, ".snoot", config.channel, "btw-prompt.txt");
+    const btwPrompt = [
+      "You are answering a quick side question. You have read-only access to the codebase — you can read files, search, and browse the web to answer the question.",
+      "Do NOT edit, write, or create any files. Do NOT run shell commands. Do NOT take any actions that modify the project.",
+      "Just answer the question concisely and move on. This is a one-off question separate from any ongoing work.",
+    ].join("\n");
+    await Bun.write(btwPromptFile, btwPrompt);
+
+    btwLlm.send(question, btwPromptFile);
+    const response = await btwLlm.waitForResponse();
+
+    if (response) {
+      watchLog(`💬 /btw response (${response.length} chars)`);
+      try {
+        await sendRichResponse(response);
+      } catch {}
+    } else {
+      try {
+        await sessionClient.send("No response received.");
+      } catch {}
+    }
   }
 
   async function start(): Promise<void> {
@@ -263,7 +310,28 @@ export function createProxy(config: Config) {
       const modelArg = modelMatch[1].trim();
       if (!modelArg) {
         const current = config.model || "default";
-        sessionClient.send(`Current model: ${current}. Usage: /model <name> or /model default`).catch(() => {});
+        const options = config.backend === "gemini"
+          ? [
+              `Current model: ${current}`,
+              "",
+              "Options:",
+              "  /model gemini-2.5-pro",
+              "  /model gemini-2.5-flash",
+              "  /model gemini-3.0-pro",
+              "  /model gemini-3.1-pro",
+              "  /model default",
+            ]
+          : [
+              `Current model: ${current}`,
+              "",
+              "Options:",
+              "  /model opus (claude-opus-4-6)",
+              "  /model sonnet (claude-sonnet-4-6)",
+              "  /model haiku (claude-haiku-4-5)",
+              "  /model <full-model-id>",
+              "  /model default",
+            ];
+        sessionClient.send(options.join("\n")).catch(() => {});
         return;
       }
       const newModel = modelArg.toLowerCase() === "default" ? undefined : modelArg;
@@ -283,6 +351,13 @@ export function createProxy(config: Config) {
     const effortMatch = trimmed.match(/^\/effort\s*(.*)/i);
     if (effortMatch !== null) {
       handleEffortCommand(effortMatch[1].trim());
+      return;
+    }
+
+    // /btw — side question in a separate process (bypass queue)
+    const btwMatch = trimmed.match(/^\/btw\s+([\s\S]+)/i);
+    if (btwMatch) {
+      handleBtw(btwMatch[1].trim());
       return;
     }
 
