@@ -533,14 +533,7 @@ function resolveUserSessionId(userSessionId: string, baseDir: string): string {
 }
 
 async function parseArgs(): Promise<Config & { foreground: boolean }> {
-  // Debug: dump raw argv info so we can diagnose "unknown option" issues on compiled builds
-  console.log(`[argv-debug] process.argv = ${JSON.stringify(process.argv)}`);
-  console.log(`[argv-debug] IS_COMPILED=${IS_COMPILED} IS_WINDOWS=${IS_WINDOWS} ARGV_OFFSET=${ARGV_OFFSET}`);
-  console.log(`[argv-debug] import.meta.filename = ${SNOOT_SRC}`);
-  console.log(`[argv-debug] process.execPath = ${process.execPath}`);
-
   const args = process.argv.slice(ARGV_OFFSET);
-  console.log(`[argv-debug] args after slice(${ARGV_OFFSET}) = ${JSON.stringify(args)}`);
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]

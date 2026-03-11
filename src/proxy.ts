@@ -184,13 +184,26 @@ export function createProxy(config: Config) {
     watchLog(`🟢 Snoot online — ${config.backend} / ${config.mode} / ${config.workDir}`);
 
     // Wait for session to connect, then re-upload avatar before greeting
+    console.log(`[proxy] Waiting 3s for session to settle...`);
     await new Promise(r => setTimeout(r, 3000));
-    await sessionClient.reuploadAvatar();
+    console.log(`[proxy] Re-uploading avatar...`);
+    try {
+      await sessionClient.reuploadAvatar();
+      console.log(`[proxy] Avatar done.`);
+    } catch (err) {
+      console.error(`[proxy] Avatar re-upload failed:`, err);
+    }
 
     // Greet the user so the conversation appears in their Session app
-    await sessionClient.send(
-      `✅ Snoot is online. Backend: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
-    );
+    console.log(`[proxy] Sending greeting...`);
+    try {
+      await sessionClient.send(
+        `✅ Snoot is online. Backend: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
+      );
+      console.log(`[proxy] Greeting sent.`);
+    } catch (err) {
+      console.error(`[proxy] Greeting send failed:`, err);
+    }
 
     // Watch inbox for terminal input (from snoot watch)
     const inboxPath = join(config.baseDir, "inbox");
