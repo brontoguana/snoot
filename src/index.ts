@@ -821,7 +821,7 @@ async function main(): Promise<void> {
         `-WorkingDirectory '${process.cwd().replace(/'/g, "''")}'`,
         `-WindowStyle Hidden`,
         `-RedirectStandardOutput '${logFile.replace(/'/g, "''")}'`,
-        `-RedirectStandardError '${logFile.replace(/'/g, "''")}'`,
+        `-RedirectStandardError '${logFile.replace(/'/g, "''").replace(/\.log$/, ".err")}'`,
       ].join(" ");
 
       Bun.spawnSync(["powershell", "-NoProfile", "-Command", psCmd], {
