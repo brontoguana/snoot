@@ -30,6 +30,10 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 
 ## Install
 
+### Windows
+
+Download `snoot-installer.exe` from the [latest release](https://github.com/brontoguana/snoot/releases/latest) and run it. It installs to `%LOCALAPPDATA%\snoot\`, adds it to your PATH, and includes an uninstaller.
+
 ### Linux / macOS
 
 ```bash
@@ -37,18 +41,6 @@ curl -fsSL https://raw.githubusercontent.com/brontoguana/snoot/main/install.sh |
 ```
 
 This downloads a standalone binary to `~/.local/bin/snoot` — no runtime dependencies needed.
-
-### Windows
-
-**Option 1 — Installer (recommended):**
-
-Download `snoot-installer.exe` from the [latest release](https://github.com/brontoguana/snoot/releases/latest) and run it. It installs to `%LOCALAPPDATA%\snoot\`, adds it to your PATH, and includes an uninstaller.
-
-**Option 2 — PowerShell:**
-
-```powershell
-irm https://raw.githubusercontent.com/brontoguana/snoot/main/install.ps1 | iex
-```
 
 ### Setup
 
