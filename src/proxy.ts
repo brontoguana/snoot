@@ -51,6 +51,7 @@ export function createProxy(config: Config) {
   let messageQueue: string[] = [];
   let shuttingDown = false;
   let pendingAvatar = false;
+  let pendingCliInstall = false;
   type BufferEntry = { type: "text"; content: string } | { type: "tool"; content: string };
   let chunkBuffer: BufferEntry[] = [];
   let textCharsSent = 0;
@@ -292,6 +293,19 @@ export function createProxy(config: Config) {
       console.error(`[proxy] Greeting send failed:`, err);
     }
 
+    // If the LLM CLI isn't found, offer to install it
+    if (!config.cliPath) {
+      const cliName = config.backend === "gemini" ? "gemini" : "claude";
+      const pkg = config.backend === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
+      console.log(`[proxy] CLI "${cliName}" not found, offering install`);
+      try {
+        await sessionClient.send(
+          `${cliName} CLI not found on this machine. Want me to install it?\n\nI'll run: npm install -g ${pkg}\n\nReply Y to install, or install it yourself and restart.`
+        );
+      } catch {}
+      pendingCliInstall = true;
+    }
+
     // Watch inbox for terminal input (from snoot watch)
     const inboxPath = join(config.baseDir, "inbox");
     writeFileSync(inboxPath, "");
@@ -314,8 +328,73 @@ export function createProxy(config: Config) {
     });
   }
 
+  async function installCli(): Promise<void> {
+    const cliName = config.backend === "gemini" ? "gemini" : "claude";
+    const pkg = config.backend === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
+    pendingCliInstall = false;
+
+    watchLog(`📦 Installing ${pkg}...`);
+    try {
+      await sessionClient.send(`Installing ${pkg}... this may take a minute.`);
+    } catch {}
+
+    try {
+      const result = Bun.spawnSync(["npm", "install", "-g", pkg], {
+        cwd: config.workDir,
+        env: process.env,
+        timeout: 600_000, // 10 min timeout
+      });
+
+      const stdout = result.stdout?.toString().trim() || "";
+      const stderr = result.stderr?.toString().trim() || "";
+
+      if (result.exitCode === 0) {
+        // Re-resolve CLI path
+        config.cliPath = findCliPath(cliName);
+        if (config.cliPath) {
+          console.log(`[proxy] CLI installed successfully: ${config.cliPath}`);
+          watchLog(`✅ ${cliName} installed: ${config.cliPath}`);
+          try {
+            await sessionClient.send(`${cliName} installed successfully. Ready to go!`);
+          } catch {}
+        } else {
+          console.error(`[proxy] npm install succeeded but CLI still not found`);
+          watchLog(`⚠️ npm install succeeded but ${cliName} not found on PATH`);
+          try {
+            await sessionClient.send(`npm install succeeded but ${cliName} still not found on PATH. You may need to restart snoot.`);
+          } catch {}
+        }
+      } else {
+        console.error(`[proxy] npm install failed (exit ${result.exitCode}): ${stderr || stdout}`);
+        watchLog(`❌ Install failed: ${stderr || stdout}`);
+        const errMsg = (stderr || stdout).slice(0, 500);
+        try {
+          await sessionClient.send(`Install failed (exit ${result.exitCode}):\n${errMsg}\n\nTry installing manually and restart.`);
+        } catch {}
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[proxy] Install error:`, err);
+      watchLog(`❌ Install error: ${msg}`);
+      try {
+        await sessionClient.send(`Install error: ${msg}`);
+      } catch {}
+    }
+  }
+
   function onMessage(msg: IncomingMessage): void {
     const trimmed = msg.text.trim();
+
+    // Handle pending CLI install confirmation
+    if (pendingCliInstall && /^y(es)?$/i.test(trimmed)) {
+      installCli();
+      return;
+    }
+    if (pendingCliInstall && /^n(o)?$/i.test(trimmed)) {
+      pendingCliInstall = false;
+      sessionClient.send("OK. Install the CLI manually and restart snoot when ready.").catch(() => {});
+      return;
+    }
 
     // Log all incoming messages to watch
     const logText = trimmed || (msg.attachments.length > 0 ? `[${msg.attachments.length} attachment(s)]` : "");
