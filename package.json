@@ -1,6 +1,6 @@
 {
   "name": "snoot",
-  "version": "0.2.5",
+  "version": "0.3.2",
   "description": "Proxy Session encrypted messenger to Claude Code CLI",
   "type": "module",
   "bin": {
