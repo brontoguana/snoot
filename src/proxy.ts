@@ -297,10 +297,12 @@ export function createProxy(config: Config) {
     if (!config.cliPath) {
       const cliName = config.backend === "gemini" ? "gemini" : "claude";
       const pkg = config.backend === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
+      const installCmd = findInstallCommand(pkg);
+      const installHint = installCmd ? `\n\nI'll run: ${installCmd.label}\n\nReply Y to install, or install it yourself and restart.` : `\n\nNo package manager found (npm, bun). Install one first.`;
       console.log(`[proxy] CLI "${cliName}" not found, offering install`);
       try {
         await sessionClient.send(
-          `${cliName} CLI not found on this machine. Want me to install it?\n\nI'll run: npm install -g ${pkg}\n\nReply Y to install, or install it yourself and restart.`
+          `${cliName} CLI not found on this machine. Want me to install it?${installHint}`
         );
       } catch {}
       pendingCliInstall = true;
@@ -328,18 +330,46 @@ export function createProxy(config: Config) {
     });
   }
 
+  function findInstallCommand(pkg: string): { cmd: string[]; label: string } | undefined {
+    // Try npm, bun, then npx/bunx as fallbacks
+    const candidates: { finder: string; cmd: (p: string) => string[]; label: string }[] = [
+      { finder: "npm", cmd: (p) => ["npm", "install", "-g", p], label: "npm install -g" },
+      { finder: "bun", cmd: (p) => ["bun", "install", "-g", p], label: "bun install -g" },
+    ];
+    for (const c of candidates) {
+      const path = findCliPath(c.finder);
+      if (path) return { cmd: c.cmd(pkg).map((s, i) => i === 0 ? path : s), label: `${c.label} ${pkg}` };
+    }
+    // Last resort: npx
+    const npxPath = findCliPath("npx");
+    if (npxPath) return { cmd: [npxPath, "-y", pkg], label: `npx -y ${pkg}` };
+    const bunxPath = findCliPath("bunx");
+    if (bunxPath) return { cmd: [bunxPath, pkg], label: `bunx ${pkg}` };
+    return undefined;
+  }
+
   async function installCli(): Promise<void> {
     const cliName = config.backend === "gemini" ? "gemini" : "claude";
     const pkg = config.backend === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
     pendingCliInstall = false;
 
-    watchLog(`📦 Installing ${pkg}...`);
+    const installCmd = findInstallCommand(pkg);
+    if (!installCmd) {
+      console.error(`[proxy] No package manager found (npm, bun, npx, bunx)`);
+      watchLog(`❌ No package manager found`);
+      try {
+        await sessionClient.send(`No package manager (npm, bun) found on this machine. Install one first, then restart.`);
+      } catch {}
+      return;
+    }
+
+    watchLog(`📦 Installing: ${installCmd.label}`);
     try {
-      await sessionClient.send(`Installing ${pkg}... this may take a minute.`);
+      await sessionClient.send(`Installing with: ${installCmd.label}\nThis may take a few minutes...`);
     } catch {}
 
     try {
-      const result = Bun.spawnSync(["npm", "install", "-g", pkg], {
+      const result = Bun.spawnSync(installCmd.cmd, {
         cwd: config.workDir,
         env: process.env,
         timeout: 600_000, // 10 min timeout
@@ -358,14 +388,14 @@ export function createProxy(config: Config) {
             await sessionClient.send(`${cliName} installed successfully. Ready to go!`);
           } catch {}
         } else {
-          console.error(`[proxy] npm install succeeded but CLI still not found`);
-          watchLog(`⚠️ npm install succeeded but ${cliName} not found on PATH`);
+          console.error(`[proxy] Install succeeded but CLI still not found`);
+          watchLog(`⚠️ Install succeeded but ${cliName} not found on PATH`);
           try {
-            await sessionClient.send(`npm install succeeded but ${cliName} still not found on PATH. You may need to restart snoot.`);
+            await sessionClient.send(`Install succeeded but ${cliName} still not found on PATH. You may need to restart snoot.`);
           } catch {}
         }
       } else {
-        console.error(`[proxy] npm install failed (exit ${result.exitCode}): ${stderr || stdout}`);
+        console.error(`[proxy] Install failed (exit ${result.exitCode}): ${stderr || stdout}`);
         watchLog(`❌ Install failed: ${stderr || stdout}`);
         const errMsg = (stderr || stdout).slice(0, 500);
         try {
