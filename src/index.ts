@@ -24,13 +24,27 @@ const IS_COMPILED = (typeof __SNOOT_COMPILED__ !== "undefined" && __SNOOT_COMPIL
 //   Interpreted: ["bun", "script.ts", ...args]       → offset 2
 const ARGV_OFFSET = IS_COMPILED && !IS_WINDOWS ? 1 : 2;
 
-// Ensure CLI tools directory is in PATH — cron/@reboot entries inherit a minimal PATH
-// that may not include user directories where claude/gemini CLIs are installed.
-const LOCAL_BIN = IS_WINDOWS
-  ? resolve(process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local"), "snoot")
-  : resolve(homedir(), ".local", "bin");
-if (!process.env.PATH?.split(PATH_DELIMITER).includes(LOCAL_BIN)) {
-  process.env.PATH = `${LOCAL_BIN}${PATH_DELIMITER}${process.env.PATH || ""}`;
+// Ensure CLI tools directory is in PATH — cron/@reboot entries and PowerShell detached
+// processes inherit a minimal PATH that may not include user directories where
+// claude/gemini CLIs are installed.
+const EXTRA_PATH_DIRS: string[] = [];
+if (IS_WINDOWS) {
+  const appData = process.env.APPDATA || resolve(homedir(), "AppData", "Roaming");
+  const localAppData = process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local");
+  EXTRA_PATH_DIRS.push(
+    resolve(localAppData, "snoot"),                    // our own binary
+    resolve(appData, "npm"),                           // npm global bin (claude.cmd)
+    resolve(localAppData, "Microsoft", "WinGet", "Links"), // winget symlinks
+    resolve(homedir(), ".bun", "bin"),                 // bun global bin
+  );
+} else {
+  EXTRA_PATH_DIRS.push(resolve(homedir(), ".local", "bin"));
+}
+const currentPath = process.env.PATH?.split(PATH_DELIMITER) || [];
+for (const dir of EXTRA_PATH_DIRS) {
+  if (!currentPath.includes(dir)) {
+    process.env.PATH = `${dir}${PATH_DELIMITER}${process.env.PATH || ""}`;
+  }
 }
 const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
 
@@ -299,7 +313,8 @@ function handleCron(): never {
       const selfCmd = IS_COMPILED
         ? shellQuote(process.execPath)
         : `${shellQuote(bunPath)} ${shellQuote(SNOOT_SRC)}`;
-      const entry = `@reboot export PATH="${LOCAL_BIN}:$PATH" && cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
+      const localBin = resolve(homedir(), ".local", "bin");
+      const entry = `@reboot export PATH="${localBin}:$PATH" && cd ${shellQuote(inst.cwd)} && ${selfCmd} ${quotedArgs} # snoot:${inst.channel}`;
       newEntries.push(entry);
       console.log(`  ${inst.channel} — added`);
     }
@@ -910,6 +925,15 @@ async function main(): Promise<void> {
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
   console.log(`  Compact at: ${config.compactAt} pairs, window: ${config.windowSize}`);
+
+  // Log whether CLI tools are findable (helps debug PATH issues on Windows)
+  try {
+    const whichCmd = IS_WINDOWS ? "where" : "which";
+    const cliName = config.backend === "gemini" ? "gemini" : "claude";
+    const which = Bun.spawnSync([whichCmd, cliName], { env: process.env });
+    const loc = which.stdout.toString().trim().split("\n")[0];
+    console.log(`  CLI path: ${loc || "(not found)"}`);
+  } catch { console.log("  CLI path: (lookup failed)"); }
 
   const proxy = createProxy(config);
 
