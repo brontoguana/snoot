@@ -18,9 +18,11 @@ declare var __SNOOT_COMPILED__: boolean | undefined;
 const IS_COMPILED = (typeof __SNOOT_COMPILED__ !== "undefined" && __SNOOT_COMPILED__) ||
   SNOOT_SRC.includes("$bunfs");
 
-// In compiled mode, process.argv = [execPath, ...args] (no script path).
-// In interpreted mode, process.argv = [bun, script.ts, ...args].
-const ARGV_OFFSET = IS_COMPILED ? 1 : 2;
+// Compiled argv varies by platform:
+//   Linux compiled: ["execPath", ...args]           → offset 1
+//   Windows compiled: ["bun", "$bunfs/...", ...args] → offset 2
+//   Interpreted: ["bun", "script.ts", ...args]       → offset 2
+const ARGV_OFFSET = IS_COMPILED && !IS_WINDOWS ? 1 : 2;
 
 // Ensure CLI tools directory is in PATH — cron/@reboot entries inherit a minimal PATH
 // that may not include user directories where claude/gemini CLIs are installed.
