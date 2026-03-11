@@ -26,15 +26,33 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on PATH
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and on PATH (optional, for Gemini backend)
 - The [Session](https://getsession.org) messenger app on your phone
-- Linux x86_64 (pre-built binary)
+- Linux x86_64 or Windows x86_64 (pre-built binaries)
 
 ## Install
+
+### Linux / macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/brontoguana/snoot/main/install.sh | bash
 ```
 
-This downloads a standalone binary to `~/.local/bin/snoot` — no runtime dependencies needed. Then set your Session ID:
+This downloads a standalone binary to `~/.local/bin/snoot` — no runtime dependencies needed.
+
+### Windows
+
+**Option 1 — Installer (recommended):**
+
+Download `snoot-installer.exe` from the [latest release](https://github.com/brontoguana/snoot/releases/latest) and run it. It installs to `%LOCALAPPDATA%\snoot\`, adds it to your PATH, and includes an uninstaller.
+
+**Option 2 — PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/brontoguana/snoot/main/install.ps1 | iex
+```
+
+### Setup
+
+After installing, set your Session ID:
 
 ```bash
 snoot set-user 05abc123...
@@ -112,14 +130,14 @@ snoot ps
 ### Boot persistence
 
 ```bash
-# Add @reboot cron entries for all registered instances
+# Register all instances to start on boot
 snoot cron
 
-# Remove all snoot entries from crontab
+# Remove boot entries
 snoot nocron
 ```
 
-Running `snoot cron` multiple times is safe — it skips channels that already have entries. Each instance restarts in its original working directory with its original launch args on reboot.
+On Linux this uses @reboot cron entries. On Windows it creates Task Scheduler logon tasks. Running `snoot cron` multiple times is safe — it skips channels that already have entries. Each instance restarts in its original working directory with its original launch args.
 
 ### Options
 
@@ -215,17 +233,16 @@ For requests that take more than 30 seconds, Snoot streams partial responses bac
 
 ## Building from Source
 
-If you want to modify Snoot or build for a different platform:
+If you want to modify Snoot or build from source:
 
 ```bash
 git clone https://github.com/brontoguana/snoot.git
 cd snoot
 bun install
-./build.sh              # produces dist/snoot-linux-x64
-cp dist/snoot-linux-x64 ~/.local/bin/snoot
+./build.sh              # produces dist/snoot-linux-x64 and dist/snoot-windows-x64.exe
 ```
 
-Requires [Bun](https://bun.sh) to build.
+Requires [Bun](https://bun.sh) to build. The build script cross-compiles for both Linux and Windows.
 
 ## Project Structure
 
