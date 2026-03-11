@@ -8,10 +8,15 @@ import type { Config, Mode, Backend } from "./types.js";
 import { createProxy } from "./proxy.js";
 
 const SNOOT_SRC = import.meta.filename;
-const IS_COMPILED = SNOOT_SRC.startsWith("/$bunfs/");
 const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
 
 const IS_WINDOWS = process.platform === "win32";
+
+// Detect compiled mode: use build-time define if available, else check for $bunfs virtual path
+// On Linux: /$bunfs/root/index, on Windows: C:\$bunfs\root\index or similar
+declare var __SNOOT_COMPILED__: boolean | undefined;
+const IS_COMPILED = (typeof __SNOOT_COMPILED__ !== "undefined" && __SNOOT_COMPILED__) ||
+  SNOOT_SRC.includes("$bunfs");
 
 // In compiled mode, process.argv = [execPath, ...args] (no script path).
 // In interpreted mode, process.argv = [bun, script.ts, ...args].

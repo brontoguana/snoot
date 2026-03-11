@@ -21,7 +21,7 @@ jobs:
       - run: bun install
 
       - name: Build Linux binary
-        run: bun build --compile src/index.ts --outfile dist/snoot-linux-x64
+        run: bun build --compile --define __SNOOT_COMPILED__=true src/index.ts --outfile dist/snoot-linux-x64
 
       - uses: actions/upload-artifact@v4
         with:
@@ -40,7 +40,7 @@ jobs:
       - run: bun install
 
       - name: Build Windows binary
-        run: bun build --compile src/index.ts --outfile dist/snoot-windows-x64.exe
+        run: bun build --compile --define __SNOOT_COMPILED__=true src/index.ts --outfile dist/snoot-windows-x64.exe
 
       - name: Get version from tag
         id: version
