@@ -15,6 +15,7 @@ export interface Config {
   windowSize: number; // keep this many pairs after compaction
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
+  cliPath?: string; // resolved full path to CLI binary (claude/gemini)
 }
 
 // -- Context --

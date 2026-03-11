@@ -48,6 +48,36 @@ for (const dir of EXTRA_PATH_DIRS) {
 }
 const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
 
+// Find the full path to a CLI tool (claude or gemini).
+// On Windows, Bun.spawn doesn't resolve .cmd/.bat extensions, so we search explicitly.
+function findCliPath(name: string): string | undefined {
+  const extensions = IS_WINDOWS ? [".cmd", ".bat", ".exe", ""] : [""];
+  const pathDirs = (process.env.PATH || "").split(PATH_DELIMITER);
+
+  // Also search common install locations not always in PATH
+  const extraDirs: string[] = [];
+  if (IS_WINDOWS) {
+    const appData = process.env.APPDATA || resolve(homedir(), "AppData", "Roaming");
+    const localAppData = process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local");
+    extraDirs.push(
+      resolve(appData, "npm"),
+      resolve(localAppData, "Microsoft", "WinGet", "Links"),
+      resolve(localAppData, "Programs", "claude-code"),  // MSI installer
+      resolve(homedir(), ".bun", "bin"),
+      resolve(homedir(), "scoop", "shims"),              // scoop
+    );
+  }
+
+  const allDirs = [...pathDirs, ...extraDirs];
+  for (const dir of allDirs) {
+    for (const ext of extensions) {
+      const candidate = resolve(dir, name + ext);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 // Build a command to spawn ourselves.
 // In compiled mode, process.execPath IS the binary — no script arg needed.
 // In interpreted mode, we need: bun <script> <args>
@@ -708,6 +738,10 @@ Commands:
     }
   }
 
+  // Resolve CLI binary path
+  const cliName = backend === "gemini" ? "gemini" : "claude";
+  const cliPath = findCliPath(cliName);
+
   return {
     channel,
     userSessionId,
@@ -720,6 +754,7 @@ Commands:
     windowSize,
     baseDir,
     workDir: process.cwd(),
+    cliPath,
     foreground,
   };
 }
@@ -926,14 +961,11 @@ async function main(): Promise<void> {
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
   console.log(`  Compact at: ${config.compactAt} pairs, window: ${config.windowSize}`);
 
-  // Log whether CLI tools are findable (helps debug PATH issues on Windows)
-  try {
-    const whichCmd = IS_WINDOWS ? "where" : "which";
-    const cliName = config.backend === "gemini" ? "gemini" : "claude";
-    const which = Bun.spawnSync([whichCmd, cliName], { env: process.env });
-    const loc = which.stdout.toString().trim().split("\n")[0];
-    console.log(`  CLI path: ${loc || "(not found)"}`);
-  } catch { console.log("  CLI path: (lookup failed)"); }
+  console.log(`  CLI path: ${config.cliPath || "(not found)"}`);
+  if (!config.cliPath) {
+    console.log(`  WARNING: ${config.backend === "gemini" ? "gemini" : "claude"} not found on PATH or common install locations`);
+    console.log(`  PATH: ${process.env.PATH}`);
+  }
 
   const proxy = createProxy(config);
 

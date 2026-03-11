@@ -96,7 +96,7 @@ export function createClaudeManager(config: Config): LLMManager {
   function spawnProcess(promptFile?: string): void {
     const tools = TOOLS_BY_MODE[config.mode];
     const args = [
-      "claude",
+      config.cliPath || "claude",
       "-p",
       "--output-format", "stream-json",
       "--verbose",

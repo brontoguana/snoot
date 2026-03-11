@@ -92,7 +92,7 @@ export function createGeminiManager(config: Config): LLMManager {
 
   function spawnProcess(fullPrompt: string): void {
     const args = [
-      "gemini",
+      config.cliPath || "gemini",
       "-o", "stream-json",
       "--yolo",
     ];

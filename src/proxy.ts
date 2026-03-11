@@ -1,5 +1,6 @@
-import { join, resolve, extname } from "path";
+import { join, resolve, extname, delimiter as PATH_DELIMITER } from "path";
 import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
+import { homedir } from "os";
 import type { Config, LLMManager, Backend, Mode, IncomingMessage, IncomingAttachment } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createClaudeManager } from "./claude.js";
@@ -7,6 +8,32 @@ import { createGeminiManager } from "./gemini.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
 import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks, initResvg } from "./profile.js";
+
+const IS_WINDOWS = process.platform === "win32";
+
+function findCliPath(name: string): string | undefined {
+  const extensions = IS_WINDOWS ? [".cmd", ".bat", ".exe", ""] : [""];
+  const pathDirs = (process.env.PATH || "").split(PATH_DELIMITER);
+  const extraDirs: string[] = [];
+  if (IS_WINDOWS) {
+    const appData = process.env.APPDATA || resolve(homedir(), "AppData", "Roaming");
+    const localAppData = process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local");
+    extraDirs.push(
+      resolve(appData, "npm"),
+      resolve(localAppData, "Microsoft", "WinGet", "Links"),
+      resolve(localAppData, "Programs", "claude-code"),
+      resolve(homedir(), ".bun", "bin"),
+      resolve(homedir(), "scoop", "shims"),
+    );
+  }
+  for (const dir of [...pathDirs, ...extraDirs]) {
+    for (const ext of extensions) {
+      const candidate = resolve(dir, name + ext);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
 
 function createLLM(config: Config): LLMManager {
   return config.backend === "gemini"
@@ -125,6 +152,7 @@ export function createProxy(config: Config) {
     }
     if (llm.isAlive()) await llm.kill();
     config.backend = backend;
+    config.cliPath = findCliPath(backend === "gemini" ? "gemini" : "claude");
     llm = createLLM(config);
     wireLLMCallbacks();
     saveSettings();
