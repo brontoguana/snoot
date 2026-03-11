@@ -329,8 +329,8 @@ export function createProxy(config: Config) {
               "Options:",
               "  /model gemini-2.5-pro",
               "  /model gemini-2.5-flash",
-              "  /model gemini-3.0-pro",
-              "  /model gemini-3.1-pro",
+              "  /model gemini-3-pro-preview",
+              "  /model gemini-3.1-pro-preview",
               "  /model default",
             ]
           : [
