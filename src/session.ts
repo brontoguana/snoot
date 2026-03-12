@@ -22,7 +22,7 @@ function isNetworkError(err: unknown): boolean {
   const name = err?.constructor?.name ?? "";
   const msg = err instanceof Error ? err.message : String(err);
   return name.includes("Fetch") || name.includes("Network")
-    || /fetch|network|snode|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT|timed out/i.test(msg);
+    || /fetch|network|snode|swarm|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT|timed out/i.test(msg);
 }
 
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -95,21 +95,48 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     // Retry poller connection with exponential backoff — handles boot before
     // network is ready and transient network outages.
     const POLLER_RETRY_DELAYS = [5, 10, 15, 30, 30, 60, 60, 60, 120, 120, 120, 300]; // seconds
-    let pollerConnected = false;
-    for (let attempt = 0; !pollerConnected; attempt++) {
-      try {
-        session.addPoller(new Poller());
-        pollerConnected = true;
-        if (attempt > 0) {
-          console.log(`[session] Poller connected after ${attempt + 1} attempts`);
+
+    async function connectPoller(reason: string): Promise<void> {
+      let connected = false;
+      for (let attempt = 0; !connected; attempt++) {
+        try {
+          session.addPoller(new Poller());
+          connected = true;
+          if (attempt > 0) {
+            console.log(`[session] Poller connected after ${attempt + 1} attempts (${reason})`);
+          }
+        } catch (err) {
+          const delay = POLLER_RETRY_DELAYS[Math.min(attempt, POLLER_RETRY_DELAYS.length - 1)];
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[session] Poller failed (attempt ${attempt + 1}): ${msg} — retrying in ${delay}s`);
+          await Bun.sleep(delay * 1000);
         }
-      } catch (err) {
-        const delay = POLLER_RETRY_DELAYS[Math.min(attempt, POLLER_RETRY_DELAYS.length - 1)];
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[session] Poller failed (attempt ${attempt + 1}): ${msg} — retrying in ${delay}s`);
-        await Bun.sleep(delay * 1000);
       }
     }
+
+    await connectPoller("initial");
+
+    // Auto-recover poller when Session network dies (e.g. "Ran out of swarms for polling").
+    // The poller throws unhandled rejections and stops — we catch them and reconnect.
+    let reconnecting = false;
+    process.on("unhandledRejection", (reason) => {
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      if (/swarm|polling/i.test(msg) && !reconnecting) {
+        reconnecting = true;
+        console.log(`[session] Poller died (${msg}) — reconnecting...`);
+        // Wait before reconnecting to let the network recover
+        setTimeout(async () => {
+          try {
+            await connectPoller("recovery");
+            console.log("[session] Poller recovered successfully");
+          } catch (err) {
+            console.error("[session] Poller recovery failed:", err);
+          } finally {
+            reconnecting = false;
+          }
+        }, 30_000); // Wait 30s before first reconnect attempt
+      }
+    });
 
     // Re-upload avatar in background so the file server URL stays fresh.
     // The metadata restore above covers the immediate need (first messages),

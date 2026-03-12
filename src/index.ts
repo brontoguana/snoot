@@ -526,13 +526,13 @@ function handleRestart(args: string[]): never {
   const channel = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
   const instances = loadInstances();
 
-  // Find instances to restart
+  // Find instances to restart — includes dead instances so crash recovery works
   const toRestart = channel
     ? instances.filter(i => i.channel === channel)
-    : instances.filter(i => isAlive(i.pid));
+    : instances;
 
   if (toRestart.length === 0) {
-    console.log("No running snoot instances found to restart.");
+    console.log("No snoot instances found in registry to restart.");
     process.exit(1);
   }
 
@@ -827,7 +827,7 @@ async function main(): Promise<void> {
   // (e.g., network blip, DNS failure, boot before network ready).
   process.on("uncaughtException", (err) => {
     const msg = err instanceof Error ? err.message : String(err);
-    const isNetwork = /fetch|snode|network|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT/i.test(msg);
+    const isNetwork = /fetch|snode|swarm|network|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT/i.test(msg);
     if (isNetwork) {
       console.error("[session] Network error (non-fatal, will retry):", msg);
     } else {
@@ -836,7 +836,7 @@ async function main(): Promise<void> {
   });
   process.on("unhandledRejection", (reason) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
-    const isNetwork = /fetch|snode|network|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT/i.test(msg);
+    const isNetwork = /fetch|snode|swarm|network|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ETIMEDOUT/i.test(msg);
     if (isNetwork) {
       console.error("[session] Network rejection (non-fatal, will retry):", msg);
     } else {
