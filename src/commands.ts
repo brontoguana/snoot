@@ -1,11 +1,5 @@
-import { readFileSync } from "fs";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
 import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(resolve(__dirname, "../package.json"), "utf-8"));
-const VERSION = pkg.version as string;
+import { VERSION } from "./version.js";
 
 const VALID_MODES: Mode[] = ["chat", "research", "coding"];
 

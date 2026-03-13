@@ -581,10 +581,8 @@ async function parseArgs(): Promise<Config & { foreground: boolean }> {
   const args = process.argv.slice(ARGV_OFFSET);
 
   if (args[0] === "--version" || args[0] === "-v") {
-    const { fileURLToPath } = await import("url");
-    const __dir = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(readFileSync(resolve(__dir, "..", "package.json"), "utf-8"));
-    console.log(`Snoot v${pkg.version}`);
+    const { VERSION } = await import("./version.js");
+    console.log(`Snoot v${VERSION}`);
     process.exit(0);
   }
 
