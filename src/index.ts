@@ -580,6 +580,14 @@ function resolveUserSessionId(userSessionId: string, baseDir: string): string {
 async function parseArgs(): Promise<Config & { foreground: boolean }> {
   const args = process.argv.slice(ARGV_OFFSET);
 
+  if (args[0] === "--version" || args[0] === "-v") {
+    const { fileURLToPath } = await import("url");
+    const __dir = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(resolve(__dir, "..", "package.json"), "utf-8"));
+    console.log(`Snoot v${pkg.version}`);
+    process.exit(0);
+  }
+
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
        snoot shutdown [channel]
@@ -755,6 +763,7 @@ Commands:
     baseDir,
     workDir: process.cwd(),
     cliPath,
+    selfCommand: selfCommand(...args),
     foreground,
   };
 }

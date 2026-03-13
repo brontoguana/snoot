@@ -16,6 +16,7 @@ export interface Config {
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
   cliPath?: string; // resolved full path to CLI binary (claude/gemini)
+  selfCommand: string[]; // command to re-exec this process (for /restart)
 }
 
 // -- Context --

@@ -641,8 +641,8 @@ export function createProxy(config: Config) {
         watchLog(`🔄 Restarting snoot`);
         if (llm.isAlive()) await llm.kill();
         await sessionClient.send(cmdResult.response);
-        Bun.spawn(process.argv, {
-          cwd: process.cwd(),
+        Bun.spawn(config.selfCommand, {
+          cwd: config.workDir,
           env: process.env,
           stdout: "inherit",
           stderr: "inherit",
@@ -789,8 +789,8 @@ export function createProxy(config: Config) {
           if (llm.isAlive()) await llm.kill();
           await sessionClient.send(cmdResult.response);
           // Re-exec with same args — new process acquires the lock
-          Bun.spawn(process.argv, {
-            cwd: process.cwd(),
+          Bun.spawn(config.selfCommand, {
+            cwd: config.workDir,
             env: process.env,
             stdout: "inherit",
             stderr: "inherit",
