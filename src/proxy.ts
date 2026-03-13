@@ -77,11 +77,11 @@ export function createProxy(config: Config) {
     appendFileSync(watchLogPath, `${time}  ${line}\n`);
   }
 
-  /** Send a response that may contain inline SVG blocks as images */
+  /** Send a response that may contain inline SVG blocks, <attach> tags, or both */
   async function sendRichResponse(text: string): Promise<void> {
     const segments = extractSvgBlocks(text);
 
-    // No SVGs found — send as plain text
+    // No rich content — send as plain text
     if (segments.length === 1 && segments[0].type === "text") {
       await sessionClient.send(segments[0].content);
       return;
@@ -91,7 +91,7 @@ export function createProxy(config: Config) {
     for (const segment of segments) {
       if (segment.type === "text") {
         await sessionClient.send(segment.content);
-      } else {
+      } else if (segment.type === "svg") {
         try {
           const png = svgToPng(segment.content);
           await sessionClient.sendImage(png);
@@ -99,6 +99,24 @@ export function createProxy(config: Config) {
         } catch (err) {
           console.error("[proxy] Failed to convert inline SVG:", err);
           await sessionClient.send("[Image failed to render]");
+        }
+      } else if (segment.type === "attach") {
+        try {
+          const filePath = resolve(config.workDir, segment.content);
+          // Security: restrict to working directory
+          if (!filePath.startsWith(resolve(config.workDir))) {
+            await sessionClient.send(`[Attachment blocked — path outside working directory]`);
+            continue;
+          }
+          if (!existsSync(filePath)) {
+            await sessionClient.send(`[Attachment not found: ${segment.content}]`);
+            continue;
+          }
+          await sessionClient.sendFile(filePath);
+          console.log(`[proxy] Sent file attachment: ${segment.content}`);
+        } catch (err) {
+          console.error("[proxy] Failed to send attachment:", err);
+          await sessionClient.send(`[Attachment failed: ${segment.content}]`);
         }
       }
     }
@@ -855,7 +873,9 @@ export function createProxy(config: Config) {
 
       // Record the exchange in context (text only, strip SVGs)
       const fullResponse = response || "";
-      const contextResponse = fullResponse.replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]");
+      const contextResponse = fullResponse
+        .replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]")
+        .replace(/<attach>[\s\S]*?<\/attach>/g, "[attachment]");
       const pair = {
         id: context.nextPairId(),
         user: text,

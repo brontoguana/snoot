@@ -2,6 +2,7 @@ import { Session, Poller, ready } from "@session.js/client";
 import { generateSeedHex } from "@session.js/keypair";
 import { encode } from "@session.js/mnemonic";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { basename, extname } from "path";
 import type { Config, SessionClient, IncomingAttachment, IncomingMessage } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 6000;
@@ -245,6 +246,28 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     }), "sendImage");
   }
 
+  async function sendFile(filePath: string, caption?: string): Promise<void> {
+    const data = readFileSync(filePath);
+    const name = basename(filePath);
+    const ext = extname(filePath).slice(1).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+      gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+      bmp: "image/bmp", tiff: "image/tiff",
+      pdf: "application/pdf", txt: "text/plain", json: "application/json",
+      csv: "text/csv", xml: "text/xml", html: "text/html",
+      zip: "application/zip", tar: "application/x-tar",
+      gz: "application/gzip", mp3: "audio/mpeg", mp4: "video/mp4",
+    };
+    const mimeType = mimeTypes[ext] || "application/octet-stream";
+    const file = new File([data.buffer as ArrayBuffer], name, { type: mimeType });
+    await withRetry(() => session.sendMessage({
+      to: config.userSessionId,
+      text: caption,
+      attachments: [file],
+    }), "sendFile");
+  }
+
   async function setAvatar(png: Uint8Array): Promise<void> {
     await withRetry(() => session.setAvatar(png), "setAvatar");
     // Persist PNG so we can re-upload later
@@ -288,5 +311,5 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     return identity.sessionId;
   }
 
-  return { startListening, send, sendImage, setAvatar, reuploadAvatar, getFile, getSessionId };
+  return { startListening, send, sendImage, sendFile, setAvatar, reuploadAvatar, getFile, getSessionId };
 }

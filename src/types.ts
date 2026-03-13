@@ -115,6 +115,7 @@ export interface SessionClient {
   startListening(onMessage: (msg: IncomingMessage) => void): Promise<void>;
   send(text: string): Promise<void>;
   sendImage(png: Uint8Array, caption?: string): Promise<void>;
+  sendFile(filePath: string, caption?: string): Promise<void>;
   setAvatar(png: Uint8Array): Promise<void>;
   reuploadAvatar(): Promise<void>;
   getFile(attachment: IncomingAttachment): Promise<File>;

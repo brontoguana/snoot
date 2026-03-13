@@ -56,24 +56,31 @@ export function svgToPng(svg: string): Uint8Array {
   return resvg.render().asPng();
 }
 
-/** Extract SVG blocks from text, returning alternating text and SVG segments */
-export function extractSvgBlocks(text: string): Array<{ type: "text"; content: string } | { type: "svg"; content: string }> {
-  const svgRegex = /<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g;
-  const segments: Array<{ type: "text"; content: string } | { type: "svg"; content: string }> = [];
+export type RichSegment =
+  | { type: "text"; content: string }
+  | { type: "svg"; content: string }
+  | { type: "attach"; content: string };
+
+/** Extract SVG blocks and <attach> tags from text, returning segments in order */
+export function extractSvgBlocks(text: string): RichSegment[] {
+  const combinedRegex = /(<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>)|(<attach>([\s\S]*?)<\/attach>)/g;
+  const segments: RichSegment[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = svgRegex.exec(text)) !== null) {
-    // Text before this SVG
+  while ((match = combinedRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {
       const before = text.slice(lastIndex, match.index).trim();
       if (before) segments.push({ type: "text", content: before });
     }
-    segments.push({ type: "svg", content: match[0] });
+    if (match[1]) {
+      segments.push({ type: "svg", content: match[1] });
+    } else if (match[3]) {
+      segments.push({ type: "attach", content: match[3].trim() });
+    }
     lastIndex = match.index + match[0].length;
   }
 
-  // Remaining text after last SVG
   if (lastIndex < text.length) {
     const after = text.slice(lastIndex).trim();
     if (after) segments.push({ type: "text", content: after });
