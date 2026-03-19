@@ -38,6 +38,7 @@ export function handleCommand(
           "  /btw <question> — side question (can read code, no edits)",
           "  /save <name> + attachment — save file to working directory",
           "  /overwrite <name> + attachment — same, but allows overwriting",
+          `  ${config.channel}.snoot.md — per-instance prompt (in project dir)`,
           "  /compact — force context compaction",
           "  /stop — cancel the current request",
           "  /restart — restart the snoot process",

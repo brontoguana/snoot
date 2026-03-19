@@ -109,6 +109,12 @@ export function createContextStore(config: Config): ContextStore {
     const promptPath = `${contextDir}/prompt.txt`;
     const parts: string[] = [SYSTEM_PROMPT];
 
+    // Per-instance prompt file: <channel>.snoot.md in working directory
+    const instancePromptPath = `${config.workDir}/${config.channel}.snoot.md`;
+    if (existsSync(instancePromptPath)) {
+      parts.push("\n\n" + readFileSync(instancePromptPath, "utf-8").trim());
+    }
+
     // Pinned context
     if (state.pins.length > 0) {
       parts.push("\n\n## Pinned Context\n");
