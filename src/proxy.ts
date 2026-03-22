@@ -646,11 +646,16 @@ export function createProxy(config: Config) {
       if (llm.isAlive()) await llm.kill();
       await context.reset();
     } else {
-      if (cmdResult.restartProcess) {
+      if (cmdResult.restartProcess || cmdResult.moveChannel) {
         watchLog(`🔄 Restarting snoot`);
         if (llm.isAlive()) await llm.kill();
         await sessionClient.send(cmdResult.response);
-        Bun.spawn(config.selfCommand, {
+        // For /move, swap the channel name in selfCommand args
+        let spawnCmd = config.selfCommand;
+        if (cmdResult.moveChannel) {
+          spawnCmd = spawnCmd.map(a => a === config.channel ? cmdResult.moveChannel! : a);
+        }
+        Bun.spawn(spawnCmd, {
           cwd: config.workDir,
           env: process.env,
           stdout: "inherit",
@@ -794,11 +799,15 @@ export function createProxy(config: Config) {
         if (llm.isAlive()) await llm.kill();
         await context.reset();
       } else {
-        if (cmdResult.restartProcess) {
+        if (cmdResult.restartProcess || cmdResult.moveChannel) {
           if (llm.isAlive()) await llm.kill();
           await sessionClient.send(cmdResult.response);
-          // Re-exec with same args — new process acquires the lock
-          Bun.spawn(config.selfCommand, {
+          // For /move, swap the channel name in selfCommand args
+          let spawnCmd = config.selfCommand;
+          if (cmdResult.moveChannel) {
+            spawnCmd = spawnCmd.map(a => a === config.channel ? cmdResult.moveChannel! : a);
+          }
+          Bun.spawn(spawnCmd, {
             cwd: config.workDir,
             env: process.env,
             stdout: "inherit",

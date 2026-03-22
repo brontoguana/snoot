@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from "fs";
+import { resolve, dirname } from "path";
+import { homedir } from "os";
 import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -36,6 +39,8 @@ export function handleCommand(
           "  /profile <description> — generate avatar from description",
           "  /profile + image — set attached image as avatar",
           "  /btw <question> — side question (can read code, no edits)",
+          "  /rename <name> — change display name (restarts)",
+          "  /move <name> — move to new channel (restarts, new chat on phone)",
           "  /save <name> + attachment — save file to working directory",
           "  /overwrite <name> + attachment — same, but allows overwriting",
           `  ${config.channel}.snoot.md — per-instance prompt (in project dir)`,
@@ -169,6 +174,97 @@ export function handleCommand(
         return { response: `Usage: ${cmd} <name> — attach a file or image to save.` };
       }
       return { response: `${cmd} requires an attached file or image. Resend with an attachment.` };
+    }
+
+    case "/rename": {
+      if (!args) {
+        return { response: "Usage: /rename <new display name>" };
+      }
+      const identityFile = `${config.baseDir}/identity.json`;
+      if (!existsSync(identityFile)) {
+        return { response: "No identity file found — only works with Session transport." };
+      }
+      try {
+        const identity = JSON.parse(readFileSync(identityFile, "utf-8"));
+        identity.displayName = args;
+        writeFileSync(identityFile, JSON.stringify(identity, null, 2));
+      } catch (err) {
+        return { response: `Failed to update identity: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      return {
+        response: `Display name changed to "${args}". Restarting...`,
+        restartProcess: true,
+      };
+    }
+
+    case "/move": {
+      if (!args) {
+        return { response: "Usage: /move <new channel name>\n\nWarning: this creates a new Session identity, so you'll lose message history in the phone app. Server-side context (summary, pins, etc.) is preserved. Use /rename if you just want to change the display name." };
+      }
+      const newChannel = args.replace(/[^a-zA-Z0-9_-]/g, "");
+      if (!newChannel) {
+        return { response: "Invalid name. Use only letters, numbers, hyphens, and underscores." };
+      }
+      if (newChannel.toLowerCase() === config.channel.toLowerCase()) {
+        return { response: `Already named "${config.channel}".` };
+      }
+
+      const oldBaseDir = config.baseDir;
+      const newBaseDir = resolve(dirname(oldBaseDir), newChannel);
+      const instancesDir = resolve(homedir(), ".snoot", "instances");
+
+      if (existsSync(newBaseDir)) {
+        return { response: `Channel "${newChannel}" already exists in this project.` };
+      }
+
+      try {
+        // 1. Rename the data directory
+        renameSync(oldBaseDir, newBaseDir);
+
+        // 2. Rename the per-instance prompt file if it exists
+        const oldPrompt = resolve(config.workDir, `${config.channel}.snoot.md`);
+        const newPrompt = resolve(config.workDir, `${newChannel}.snoot.md`);
+        if (existsSync(oldPrompt) && !existsSync(newPrompt)) {
+          renameSync(oldPrompt, newPrompt);
+        }
+
+        // 3. Update launch.json with new channel name in args
+        const launchFile = resolve(newBaseDir, "launch.json");
+        if (existsSync(launchFile)) {
+          try {
+            const launch = JSON.parse(readFileSync(launchFile, "utf-8"));
+            if (Array.isArray(launch.args)) {
+              // First positional arg is the channel name
+              const idx = launch.args.indexOf(config.channel);
+              if (idx !== -1) launch.args[idx] = newChannel;
+              writeFileSync(launchFile, JSON.stringify(launch));
+            }
+          } catch {}
+        }
+
+        // 4. Update instance registry
+        const oldRegistry = resolve(instancesDir, `${config.channel}.json`);
+        const newRegistry = resolve(instancesDir, `${newChannel}.json`);
+        if (existsSync(oldRegistry)) {
+          try {
+            const inst = JSON.parse(readFileSync(oldRegistry, "utf-8"));
+            inst.channel = newChannel;
+            if (Array.isArray(inst.args)) {
+              const idx = inst.args.indexOf(config.channel);
+              if (idx !== -1) inst.args[idx] = newChannel;
+            }
+            writeFileSync(newRegistry, JSON.stringify(inst, null, 2));
+            unlinkSync(oldRegistry);
+          } catch {}
+        }
+      } catch (err) {
+        return { response: `Move failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+
+      return {
+        response: `Moving "${config.channel}" to "${newChannel}". This will start a new chat on your phone (server-side context is preserved). Restarting...`,
+        moveChannel: newChannel,
+      };
     }
 
     case "/stop":

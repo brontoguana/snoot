@@ -142,6 +142,7 @@ export interface CommandResult {
   killProcess?: boolean;
   triggerCompaction?: boolean;
   restartProcess?: boolean;
+  moveChannel?: string; // new channel name for /move — proxy handles restart with new name
 }
 
 // -- Context Store --
