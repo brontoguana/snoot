@@ -938,5 +938,14 @@ export function createProxy(config: Config) {
     process.exit(0);
   }
 
-  return { start, shutdown };
+  /** Synchronous fast shutdown — kills LLM immediately, used by SIGTERM handler */
+  function forceShutdown(): void {
+    shuttingDown = true;
+    console.log("\n[proxy] Force shutdown...");
+    llm.forceKill();
+    console.log("[proxy] Goodbye.");
+    process.exit(0);
+  }
+
+  return { start, shutdown, forceShutdown };
 }

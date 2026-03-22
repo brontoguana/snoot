@@ -158,7 +158,8 @@ function killInstance(inst: InstanceInfo): boolean {
   }
   console.log(`Stopping snoot "${inst.channel}" (pid ${inst.pid})...`);
   try { process.kill(inst.pid, "SIGTERM"); } catch {}
-  Bun.sleepSync(500);
+  // Give proxy time to kill its LLM child process before we SIGKILL
+  Bun.sleepSync(3000);
   try { process.kill(inst.pid, "SIGKILL"); } catch {}
   unregisterInstance(inst.channel);
   // Also clean up PID file in the project dir
@@ -1221,9 +1222,9 @@ async function main(): Promise<void> {
 
   const proxy = createProxy(config);
 
-  // Graceful shutdown
+  // Graceful shutdown — SIGINT (Ctrl-C) gets graceful, SIGTERM (from killInstance) gets fast
   process.on("SIGINT", () => proxy.shutdown());
-  process.on("SIGTERM", () => proxy.shutdown());
+  process.on("SIGTERM", () => proxy.forceShutdown());
 
   // Retry proxy.start() with backoff — handles boot before network ready
   const START_RETRY_DELAYS = [10, 15, 30, 30, 60, 60, 120, 120, 300, 300]; // seconds

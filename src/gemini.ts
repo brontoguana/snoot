@@ -267,6 +267,7 @@ export function createGeminiManager(config: Config): LLMManager {
 
           setTimeout(() => {
             pendingRetry = false;
+            forceKill();
             console.log(`[gemini] Resending after rate limit (attempt ${rateLimitRetryCount})`);
             spawnProcess(lastUserMessage);
           }, RATE_LIMIT_RETRY_DELAY);
@@ -290,6 +291,7 @@ export function createGeminiManager(config: Config): LLMManager {
 
           setTimeout(() => {
             pendingRetry = false;
+            forceKill();
             console.log(`[gemini] Resending after API error (attempt ${apiErrorRetryCount})`);
             spawnProcess(lastUserMessage);
           }, delay);
@@ -327,15 +329,22 @@ export function createGeminiManager(config: Config): LLMManager {
     return alive;
   }
 
+  /** Synchronous SIGKILL — for use in SIGTERM/SIGINT handlers */
+  function forceKill(): void {
+    if (!proc) return;
+    alive = false;
+    stopHealthCheck();
+    try { proc.kill("SIGKILL"); } catch {}
+    proc = null;
+  }
+
   function send(text: string, promptFile?: string): void {
     rateLimitRetryCount = 0;
     apiErrorRetryCount = 0;
 
-    // Kill any leftover process
+    // Queue guarantees no concurrent sends — log if this ever happens
     if (proc && alive) {
-      try { proc.kill("SIGKILL"); } catch {}
-      proc = null;
-      alive = false;
+      console.error("[gemini] WARNING: send() called with running process — this shouldn't happen");
     }
 
     // Build the full prompt: system prompt from file + user message
@@ -418,5 +427,5 @@ export function createGeminiManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
+  return { isAlive, send, waitForResponse, kill, forceKill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
 }

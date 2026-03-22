@@ -341,6 +341,9 @@ export function createClaudeManager(config: Config): LLMManager {
           setTimeout(() => {
             pendingRetry = false;
 
+            // Kill old process if still alive before spawning new one
+            forceKill();
+
             // Spawn a fresh process for the retry
             console.log(`[claude] Resending after rate limit (attempt ${rateLimitRetryCount}) — spawning new process`);
             spawnProcess(lastPromptFile);
@@ -374,6 +377,9 @@ export function createClaudeManager(config: Config): LLMManager {
 
           setTimeout(() => {
             pendingRetry = false;
+
+            // Kill old process if still alive before spawning new one
+            forceKill();
 
             console.log(`[claude] Resending after API error (attempt ${apiErrorRetryCount}) — spawning new process`);
             spawnProcess(lastPromptFile);
@@ -421,17 +427,24 @@ export function createClaudeManager(config: Config): LLMManager {
     return alive;
   }
 
+  /** Synchronous SIGKILL — for use in SIGTERM/SIGINT handlers */
+  function forceKill(): void {
+    if (!proc) return;
+    alive = false;
+    stopHealthCheck();
+    try { proc.kill("SIGKILL"); } catch {}
+    proc = null;
+  }
+
   function send(text: string, promptFile?: string): void {
     lastUserMessage = text;
     lastPromptFile = promptFile;
     rateLimitRetryCount = 0;
     apiErrorRetryCount = 0;
 
-    // Kill any leftover process (shouldn't exist, but safety)
+    // Queue guarantees no concurrent sends — log if this ever happens
     if (proc && alive) {
-      try { proc.kill("SIGKILL"); } catch {}
-      proc = null;
-      alive = false;
+      console.error("[claude] WARNING: send() called with running process — this shouldn't happen");
     }
 
     // Spawn fresh process
@@ -526,5 +539,5 @@ export function createClaudeManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
+  return { isAlive, send, waitForResponse, kill, forceKill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
 }

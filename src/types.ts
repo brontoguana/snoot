@@ -92,6 +92,7 @@ export interface LLMManager {
   send(text: string, promptFile?: string): void;
   waitForResponse(): Promise<string>;
   kill(): Promise<void>;
+  forceKill(): void; // synchronous SIGKILL — for use in SIGTERM handlers
   onExit(cb: () => void): void;
   onChunk(cb: (text: string) => void): void;
   onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
