@@ -3,7 +3,7 @@ import { generateSeedHex } from "@session.js/keypair";
 import { encode } from "@session.js/mnemonic";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { basename, extname } from "path";
-import type { Config, SessionClient, IncomingAttachment, IncomingMessage } from "./types.js";
+import type { Config, TransportClient, IncomingAttachment, IncomingMessage } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 6000;
 const RETRY_DELAY = 30_000;
@@ -52,7 +52,7 @@ interface Identity {
   displayName: string;
 }
 
-export async function createSessionClient(config: Config): Promise<SessionClient> {
+export async function createSessionClient(config: Config): Promise<TransportClient> {
   await ready;
 
   const identityFile = `${config.baseDir}/identity.json`;
@@ -165,7 +165,7 @@ export async function createSessionClient(config: Config): Promise<SessionClient
 
     session.on("message", (message: any) => {
       // Only accept messages from the configured user
-      if (message.from !== config.userSessionId) {
+      if (message.from !== config.userId) {
         return;
       }
 
@@ -200,14 +200,14 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     });
 
     console.log(`Listening on channel "${config.channel}" (${identity.sessionId})`);
-    console.log(`Accepting messages from: ${config.userSessionId}`);
+    console.log(`Accepting messages from: ${config.userId}`);
   }
 
   async function send(text: string): Promise<void> {
     // Chunk long messages
     if (text.length <= MAX_MESSAGE_LENGTH) {
       await withRetry(() => session.sendMessage({
-        to: config.userSessionId,
+        to: config.userId,
         text,
       }), "send");
       return;
@@ -231,7 +231,7 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     for (let i = 0; i < chunks.length; i++) {
       const prefix = chunks.length > 1 ? `[${i + 1}/${chunks.length}] ` : "";
       await withRetry(() => session.sendMessage({
-        to: config.userSessionId,
+        to: config.userId,
         text: prefix + chunks[i],
       }), "send-chunk");
     }
@@ -240,7 +240,7 @@ export async function createSessionClient(config: Config): Promise<SessionClient
   async function sendImage(png: Uint8Array, caption?: string): Promise<void> {
     const file = new File([png.buffer as ArrayBuffer], "image.png", { type: "image/png" });
     await withRetry(() => session.sendMessage({
-      to: config.userSessionId,
+      to: config.userId,
       text: caption,
       attachments: [file],
     }), "sendImage");
@@ -262,7 +262,7 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     const mimeType = mimeTypes[ext] || "application/octet-stream";
     const file = new File([data.buffer as ArrayBuffer], name, { type: mimeType });
     await withRetry(() => session.sendMessage({
-      to: config.userSessionId,
+      to: config.userId,
       text: caption,
       attachments: [file],
     }), "sendFile");
@@ -307,9 +307,9 @@ export async function createSessionClient(config: Config): Promise<SessionClient
     return await session.getFile(attachment._raw as any);
   }
 
-  function getSessionId(): string {
+  function getIdentity(): string {
     return identity.sessionId;
   }
 
-  return { startListening, send, sendImage, sendFile, setAvatar, reuploadAvatar, getFile, getSessionId };
+  return { startListening, send, sendImage, sendFile, setAvatar, reuploadAvatar, getFile, getIdentity };
 }

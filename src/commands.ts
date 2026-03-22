@@ -78,6 +78,7 @@ export function handleCommand(
       const statusName = config.backend === "gemini" ? "Gemini" : "Claude";
       return {
         response: [
+          `Transport: ${config.transport}`,
           `Backend: ${config.backend}`,
           `Model: ${config.model || "default"}`,
           `Effort: ${config.effort !== undefined ? config.effort : "default"}`,

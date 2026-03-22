@@ -1,8 +1,8 @@
 # Snoot
 
-A proxy that bridges [Session](https://getsession.org) encrypted messenger with AI coding assistants, letting you chat with Claude or Gemini about your codebase from your phone.
+A proxy that bridges encrypted messengers ([Session](https://getsession.org) or [Matrix](https://matrix.org)) with AI coding assistants, letting you chat with Claude or Gemini about your codebase from your phone.
 
-Messages flow: **Session app** → **Snoot proxy** → **Claude/Gemini process** → **back to Session**.
+Messages flow: **Messenger app** → **Snoot proxy** → **Claude/Gemini process** → **back to messenger**.
 
 <table align="center">
   <tr>
@@ -25,7 +25,7 @@ Snoot uses an ephemeral per-message model — each message (or batch of rapid me
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on PATH
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and on PATH (optional, for Gemini backend)
-- The [Session](https://getsession.org) messenger app on your phone
+- A messenger app: [Session](https://getsession.org) or a [Matrix](https://matrix.org) client (e.g. [Element](https://element.io))
 - Linux x86_64 or Windows x86_64 (pre-built binaries)
 
 ## Install
@@ -44,25 +44,32 @@ This downloads a standalone binary to `~/.local/bin/snoot` — no runtime depend
 
 ### Setup
 
-After installing, set your Session ID:
+Configure your transport and user ID:
 
 ```bash
-snoot set-user 05abc123...
+# Session transport
+snoot setup session 05abc123...
+
+# Matrix transport
+snoot setup matrix @me:myserver.org --homeserver https://myserver.org --token syt_...
+# or login interactively:
+snoot setup matrix @me:myserver.org --homeserver https://myserver.org
 ```
 
-This saves to `~/.snoot/user.json` and is used for all projects unless overridden with `--user`.
+This saves to `~/.snoot/config.json` and is used for all projects unless overridden with `--user`. Switching transport automatically restarts all running instances.
 
 ## Usage
 
 ```
 snoot <channel> [options]
+snoot setup session <session-id>
+snoot setup matrix <@user:server> [--homeserver <url>] [--token <token>]
 snoot watch <channel>
 snoot shutdown [channel]
 snoot restart [channel]
 snoot ps
 snoot cron
 snoot nocron
-snoot set-user <session-id>
 ```
 
 ### Starting a channel
@@ -135,7 +142,7 @@ On Linux this uses @reboot cron entries. On Windows it creates Task Scheduler lo
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--user <session-id>` | User's Session ID (overrides saved ID) | — |
+| `--user <id>` | User ID — Session hex or Matrix @user:server (overrides saved) | — |
 | `--mode <mode>` | Tool mode: `chat`, `research`, or `coding` | `coding` |
 | `--backend <backend>` | AI backend: `claude` or `gemini` | `claude` |
 | `--budget <usd>` | Max budget per message in USD | unlimited |
@@ -154,9 +161,9 @@ Budget can also be set globally in `~/.snoot/config.json`:
 - **research** — Read-only tools: Read, Grep, Glob, WebSearch, WebFetch.
 - **coding** — Full tools: Read, Grep, Glob, Edit, Write, Bash, WebSearch, WebFetch.
 
-## Session Commands
+## Chat Commands
 
-Send these from your phone in the Session chat:
+Send these from your phone in the messenger chat:
 
 | Command | Description |
 |---------|-------------|
@@ -184,10 +191,10 @@ When the AI wants to show a table, diagram, chart, or any structured visual, it 
 
 1. Detects SVG blocks in the response text.
 2. Converts each SVG to a PNG image (800px wide, via resvg-js).
-3. Sends the PNG through Session as an image message.
+3. Sends the PNG as an image message.
 4. Sends surrounding text as separate text messages.
 
-For example, if the AI responds with an explanation, then a diagram, then more explanation — you'll receive three Session messages: text, image, text.
+For example, if the AI responds with an explanation, then a diagram, then more explanation — you'll receive three messages: text, image, text.
 
 SVGs are stripped from conversation history (replaced with `[image]`) to save context space.
 
@@ -245,10 +252,11 @@ src/
 ├── claude.ts     # Claude process lifecycle, stream-json I/O
 ├── gemini.ts     # Gemini process lifecycle, stream-json I/O
 ├── context.ts    # Context store, compaction, prompt building
-├── session.ts    # Session client, message chunking, image sending
+├── session.ts    # Session transport — identity, send/receive, message chunking
+├── matrix.ts     # Matrix transport — login, room management, send/receive
 ├── commands.ts   # /slash command handler
 ├── profile.ts    # Avatar generation, SVG-to-PNG conversion
-└── types.ts      # Shared types and interfaces
+└── types.ts      # Shared types and interfaces (TransportClient, Config, etc.)
 ```
 
 ## License

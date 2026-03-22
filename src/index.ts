@@ -4,7 +4,7 @@ import "@session.js/bun-network";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync, watch as fsWatchFile } from "fs";
 import { resolve, dirname, basename, parse as parsePath, delimiter as PATH_DELIMITER } from "path";
 import { homedir } from "os";
-import type { Config, Mode, Backend } from "./types.js";
+import type { Config, Mode, Backend, Transport, MatrixConfig } from "./types.js";
 import { createProxy } from "./proxy.js";
 
 const SNOOT_SRC = import.meta.filename;
@@ -197,14 +197,236 @@ function handleSetUser(args: string[]): never {
   const sessionId = args[0];
   if (!sessionId) {
     console.error("Usage: snoot set-user <session-id>");
+    console.error("  (deprecated — use 'snoot setup session <id>' instead)");
     process.exit(1);
   }
 
+  // Write both old format (backward compat) and new config format
   mkdirSync(GLOBAL_SNOOT_DIR, { recursive: true });
   const userFile = resolve(GLOBAL_SNOOT_DIR, "user.json");
   writeFileSync(userFile, JSON.stringify({ sessionId }));
-  console.log(`Global user Session ID saved to ${userFile}`);
+
+  const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
+  const existing = existsSync(configFile) ? JSON.parse(readFileSync(configFile, "utf-8")) : {};
+  existing.transport = "session";
+  existing.userId = sessionId;
+  writeFileSync(configFile, JSON.stringify(existing, null, 2));
+
+  console.log(`Global user Session ID saved.`);
+  console.log(`  (Tip: use 'snoot setup session <id>' going forward)`);
   process.exit(0);
+}
+
+interface GlobalConfig {
+  transport: Transport;
+  userId: string;
+  matrixHomeserver?: string;
+  matrixAccessToken?: string;
+  matrixDeviceId?: string;
+  budgetUsd?: number;
+}
+
+function loadGlobalConfig(): GlobalConfig | null {
+  const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
+  if (!existsSync(configFile)) return null;
+  try {
+    return JSON.parse(readFileSync(configFile, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveGlobalConfig(config: GlobalConfig): void {
+  mkdirSync(GLOBAL_SNOOT_DIR, { recursive: true });
+  const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
+  writeFileSync(configFile, JSON.stringify(config, null, 2));
+}
+
+function detectTransport(userId: string): Transport {
+  // @user:server = Matrix, 05<hex> = Session
+  if (userId.startsWith("@") && userId.includes(":")) return "matrix";
+  return "session";
+}
+
+async function handleSetup(args: string[]): Promise<never> {
+  const transport = args[0]?.toLowerCase() as Transport | undefined;
+
+  if (!transport || !["session", "matrix"].includes(transport)) {
+    console.log(`Usage:
+  snoot setup session <session-id>
+  snoot setup matrix <@user:server> [--homeserver <url>] [--token <access-token>]
+
+Current config:`);
+    const cfg = loadGlobalConfig();
+    if (cfg) {
+      console.log(`  Transport: ${cfg.transport}`);
+      console.log(`  User: ${cfg.userId}`);
+      if (cfg.matrixHomeserver) console.log(`  Homeserver: ${cfg.matrixHomeserver}`);
+    } else {
+      console.log("  (not configured)");
+    }
+    process.exit(0);
+  }
+
+  if (transport === "session") {
+    const sessionId = args[1];
+    if (!sessionId) {
+      console.error("Usage: snoot setup session <session-id>");
+      process.exit(1);
+    }
+
+    const existing = loadGlobalConfig() || {} as GlobalConfig;
+    const wasMatrix = existing.transport === "matrix";
+    const config: GlobalConfig = {
+      ...existing,
+      transport: "session",
+      userId: sessionId,
+    };
+    saveGlobalConfig(config);
+
+    // Also write legacy user.json for backward compat
+    writeFileSync(resolve(GLOBAL_SNOOT_DIR, "user.json"), JSON.stringify({ sessionId }));
+
+    console.log(`Transport: session`);
+    console.log(`User ID: ${sessionId}`);
+    console.log(`Saved to ~/.snoot/config.json`);
+
+    if (wasMatrix) {
+      await restartAllInstances("Transport switched to session");
+    }
+    process.exit(0);
+  }
+
+  if (transport === "matrix") {
+    const matrixUser = args[1];
+    if (!matrixUser || !matrixUser.startsWith("@") || !matrixUser.includes(":")) {
+      console.error("Usage: snoot setup matrix <@user:server> [--homeserver <url>] [--token <access-token>]");
+      console.error("  Example: snoot setup matrix @me:matrix.org --homeserver https://matrix.org --token syt_...");
+      process.exit(1);
+    }
+
+    // Parse optional flags
+    let homeserver = "";
+    let accessToken = "";
+
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === "--homeserver" || args[i] === "--hs") {
+        homeserver = args[++i] || "";
+      } else if (args[i] === "--token") {
+        accessToken = args[++i] || "";
+      }
+    }
+
+    // Auto-derive homeserver from user ID if not specified
+    if (!homeserver) {
+      const server = matrixUser.split(":")[1];
+      homeserver = `https://${server}`;
+      console.log(`Homeserver not specified, using: ${homeserver}`);
+    }
+
+    // If no token provided, prompt for password
+    if (!accessToken) {
+      console.log(`No --token provided. Attempting password login...`);
+      const password = await promptPassword(`Password for ${matrixUser}: `);
+      if (!password) {
+        console.error("No password provided. Use --token instead if you have an access token.");
+        process.exit(1);
+      }
+
+      try {
+        const sdk = await import("matrix-js-sdk");
+        const tempClient = sdk.createClient({ baseUrl: homeserver });
+        const loginResult = await tempClient.login("m.login.password", {
+          user: matrixUser,
+          password,
+          initial_device_display_name: "Snoot",
+        });
+        accessToken = loginResult.access_token;
+        console.log(`Login successful. Device ID: ${loginResult.device_id}`);
+        tempClient.stopClient();
+      } catch (err) {
+        console.error(`Login failed: ${err instanceof Error ? err.message : err}`);
+        process.exit(1);
+      }
+    }
+
+    // Validate token
+    try {
+      const sdk = await import("matrix-js-sdk");
+      const tempClient = sdk.createClient({
+        baseUrl: homeserver,
+        accessToken,
+      });
+      const whoami = await tempClient.whoami();
+      console.log(`Verified: ${whoami.user_id}`);
+      tempClient.stopClient();
+    } catch (err) {
+      console.error(`Token validation failed: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+
+    const existing = loadGlobalConfig() || {} as GlobalConfig;
+    const wasSession = existing.transport === "session" || !existing.transport;
+    const config: GlobalConfig = {
+      ...existing,
+      transport: "matrix",
+      userId: matrixUser,
+      matrixHomeserver: homeserver,
+      matrixAccessToken: accessToken,
+    };
+    saveGlobalConfig(config);
+
+    console.log(`\nTransport: matrix`);
+    console.log(`User ID: ${matrixUser}`);
+    console.log(`Homeserver: ${homeserver}`);
+    console.log(`Saved to ~/.snoot/config.json`);
+
+    if (wasSession && loadInstances().length > 0) {
+      await restartAllInstances("Transport switched to matrix");
+    }
+    process.exit(0);
+  }
+
+  process.exit(0);
+}
+
+async function promptPassword(prompt: string): Promise<string> {
+  const { createInterface } = await import("readline");
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    // Note: this won't hide input in all terminals, but it's the best we can do without raw mode
+    process.stderr.write(prompt);
+    rl.once("line", (line) => {
+      rl.close();
+      resolve(line.trim());
+    });
+  });
+}
+
+async function restartAllInstances(reason: string): Promise<void> {
+  const instances = loadInstances();
+  const alive = instances.filter(i => isAlive(i.pid));
+
+  if (alive.length === 0) {
+    console.log("No running instances to restart.");
+    return;
+  }
+
+  console.log(`\n${reason} — restarting ${alive.length} instance(s)...`);
+  for (const inst of alive) {
+    killInstance(inst);
+    const launchArgs = inst.args.length > 0 ? inst.args : [inst.channel];
+    console.log(`  Restarting "${inst.channel}"...`);
+    const child = Bun.spawn(selfCommand(...launchArgs), {
+      cwd: inst.cwd,
+      env: process.env,
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    child.unref();
+  }
+  console.log("Done.");
 }
 
 function handlePs(): never {
@@ -556,9 +778,9 @@ function handleRestart(args: string[]): never {
   process.exit(0);
 }
 
-function resolveUserSessionId(userSessionId: string, baseDir: string): string {
+function resolveUserId(cliUserId: string, baseDir: string): string {
   // 1. CLI --user flag (highest priority)
-  if (userSessionId) return userSessionId;
+  if (cliUserId) return cliUserId;
 
   // 2. Project-local user.json
   const localUserFile = `${baseDir}/user.json`;
@@ -567,7 +789,11 @@ function resolveUserSessionId(userSessionId: string, baseDir: string): string {
     if (data.sessionId) return data.sessionId;
   }
 
-  // 3. Global ~/.snoot/user.json
+  // 3. Global config.json (new format)
+  const globalConfig = loadGlobalConfig();
+  if (globalConfig?.userId) return globalConfig.userId;
+
+  // 4. Global ~/.snoot/user.json (legacy)
   const globalUserFile = resolve(GLOBAL_SNOOT_DIR, "user.json");
   if (existsSync(globalUserFile)) {
     const data = JSON.parse(readFileSync(globalUserFile, "utf-8"));
@@ -588,16 +814,17 @@ async function parseArgs(): Promise<Config & { foreground: boolean }> {
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`Usage: snoot <channel> [options]
+       snoot setup session <session-id>
+       snoot setup matrix <@user:server> [--homeserver <url>] [--token <token>]
        snoot shutdown [channel]
        snoot restart [channel]
        snoot watch <channel>
        snoot ps
        snoot cron
        snoot nocron
-       snoot set-user <session-id>
 
 Options:
-  --user <session-id>   User's Session ID (overrides saved ID)
+  --user <id>           User ID (overrides saved — Session hex or Matrix @user:server)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
   --backend <backend>   LLM backend: claude, gemini (default: claude)
   --budget <usd>        Max budget per message in USD (no limit by default)
@@ -606,13 +833,16 @@ Options:
   --fg                  Run in foreground instead of daemonizing
 
 Commands:
+  setup session <id>    Configure Session transport with your Session ID.
+  setup matrix <user>   Configure Matrix transport. Use --homeserver and --token,
+                        or omit --token to login with password interactively.
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
   restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
   watch <channel>       Watch live activity (tool use, spawns, responses) in real time.
   ps                    List all snoot instances, their status, and project directories.
   cron                  Add startup entries for all registered instances.
   nocron                Remove all snoot startup entries.
-  set-user <session-id> Save your Session ID globally (~/.snoot/user.json).
+  set-user <session-id> (deprecated) Use 'snoot setup session <id>' instead.
 `);
     process.exit(0);
   }
@@ -624,6 +854,10 @@ Commands:
 
   if (args[0] === "set-user") {
     handleSetUser(args.slice(1));
+  }
+
+  if (args[0] === "setup") {
+    await handleSetup(args.slice(1));
   }
 
   if (args[0] === "ps") {
@@ -648,7 +882,7 @@ Commands:
   }
 
   const channel = args[0];
-  let userSessionId = "";
+  let cliUserId = "";
   let mode: Mode = "coding";
   let backend: Backend = "claude";
   let budgetUsd: number | undefined = undefined;
@@ -660,7 +894,7 @@ Commands:
   for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
       case "--user":
-        userSessionId = args[++i] ?? "";
+        cliUserId = args[++i] ?? "";
         break;
       case "--mode":
         mode = (args[++i] ?? "coding") as Mode;
@@ -699,22 +933,44 @@ Commands:
   // Resolve base directory
   const baseDir = resolve(`.snoot/${channel}`);
 
-  // Resolve user Session ID: --user > local > global
-  userSessionId = resolveUserSessionId(userSessionId, baseDir);
+  // Resolve user ID: --user > local > global config > legacy user.json
+  const userId = resolveUserId(cliUserId, baseDir);
 
   // Save to project-local if provided via --user
-  if (userSessionId && args.some((a, i) => a === "--user" && args[i + 1])) {
+  if (userId && args.some((a, i) => a === "--user" && args[i + 1])) {
     mkdirSync(baseDir, { recursive: true });
-    writeFileSync(`${baseDir}/user.json`, JSON.stringify({ sessionId: userSessionId }));
+    writeFileSync(`${baseDir}/user.json`, JSON.stringify({ sessionId: userId }));
   }
 
-  if (!userSessionId) {
+  if (!userId) {
     console.error(
-      `No user Session ID configured.\n` +
-      `  Run: snoot set-user <session-id>     (global)\n` +
-      `  Or:  snoot ${channel} --user <id>    (per-project)`
+      `No user ID configured.\n` +
+      `  Run: snoot setup session <session-id>    (Session transport)\n` +
+      `  Or:  snoot setup matrix <@user:server>   (Matrix transport)\n` +
+      `  Or:  snoot ${channel} --user <id>        (per-project override)`
     );
     process.exit(1);
+  }
+
+  // Resolve transport from global config or auto-detect from user ID format
+  const globalConfig = loadGlobalConfig();
+  let transport: Transport = globalConfig?.transport || detectTransport(userId);
+
+  // Build Matrix config if needed
+  let matrixConfig: MatrixConfig | undefined;
+  if (transport === "matrix") {
+    if (globalConfig?.matrixHomeserver && globalConfig?.matrixAccessToken) {
+      matrixConfig = {
+        homeserver: globalConfig.matrixHomeserver,
+        accessToken: globalConfig.matrixAccessToken,
+      };
+    } else {
+      console.error(
+        `Matrix transport selected but not configured.\n` +
+        `  Run: snoot setup matrix <@user:server> --homeserver <url> --token <token>`
+      );
+      process.exit(1);
+    }
   }
 
   // Load persisted settings (backend/model/effort) — CLI args override saved values
@@ -731,17 +987,9 @@ Commands:
     } catch {}
   }
 
-  // Resolve budget: --budget flag > global ~/.snoot/config.json > no limit
-  if (budgetUsd === undefined) {
-    const globalConfigFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
-    if (existsSync(globalConfigFile)) {
-      try {
-        const globalConfig = JSON.parse(readFileSync(globalConfigFile, "utf-8"));
-        if (typeof globalConfig.budgetUsd === "number") {
-          budgetUsd = globalConfig.budgetUsd;
-        }
-      } catch {}
-    }
+  // Resolve budget: --budget flag > global config > no limit
+  if (budgetUsd === undefined && globalConfig?.budgetUsd !== undefined) {
+    budgetUsd = globalConfig.budgetUsd;
   }
 
   // Resolve CLI binary path
@@ -750,7 +998,9 @@ Commands:
 
   return {
     channel,
-    userSessionId,
+    transport,
+    userId,
+    matrixConfig,
     mode,
     backend,
     model: savedModel,
@@ -960,6 +1210,7 @@ async function main(): Promise<void> {
 
   console.log(`Snoot starting (pid ${process.pid})...`);
   console.log(`  Channel: ${config.channel}`);
+  console.log(`  Transport: ${config.transport}`);
   console.log(`  Backend: ${config.backend}`);
   console.log(`  Model: ${config.model || "default"}`);
   console.log(`  Effort: ${config.effort || "default"}`);

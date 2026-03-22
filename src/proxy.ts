@@ -1,8 +1,9 @@
 import { join, resolve, extname, delimiter as PATH_DELIMITER } from "path";
 import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
 import { homedir } from "os";
-import type { Config, LLMManager, Backend, Mode, IncomingMessage, IncomingAttachment } from "./types.js";
+import type { Config, LLMManager, TransportClient, Backend, Mode, IncomingMessage, IncomingAttachment } from "./types.js";
 import { createSessionClient } from "./session.js";
+import { createMatrixClient } from "./matrix.js";
 import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
 import { createContextStore } from "./context.js";
@@ -44,7 +45,7 @@ function createLLM(config: Config): LLMManager {
 export function createProxy(config: Config) {
   const context = createContextStore(config);
   let llm: LLMManager = createLLM(config);
-  let sessionClient: Awaited<ReturnType<typeof createSessionClient>>;
+  let sessionClient: TransportClient;
   let processing = false;
   let processingStartedAt = 0;
   const PROCESSING_TIMEOUT = 5 * 60_000; // 5 minutes — force-reset if stuck
@@ -281,13 +282,15 @@ export function createProxy(config: Config) {
     } catch (err) {
       console.error("[proxy] Failed to load context, starting fresh:", err);
     }
-    sessionClient = await createSessionClient(config);
+    sessionClient = config.transport === "matrix"
+      ? await createMatrixClient(config)
+      : await createSessionClient(config);
 
     wireLLMCallbacks();
 
     await sessionClient.startListening(onMessage);
-    console.log(`[proxy] Ready. Mode: ${config.mode}, Backend: ${config.backend}`);
-    watchLog(`🟢 Snoot online — ${config.backend} / ${config.mode} / ${config.workDir}`);
+    console.log(`[proxy] Ready. Transport: ${config.transport}, Mode: ${config.mode}, Backend: ${config.backend}`);
+    watchLog(`🟢 Snoot online — ${config.transport} / ${config.backend} / ${config.mode} / ${config.workDir}`);
 
     // Wait for session to connect, then re-upload avatar before greeting
     console.log(`[proxy] Waiting 3s for session to settle...`);

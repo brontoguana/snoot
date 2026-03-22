@@ -2,10 +2,19 @@
 
 export type Mode = "chat" | "research" | "coding";
 export type Backend = "claude" | "gemini";
+export type Transport = "session" | "matrix";
+
+export interface MatrixConfig {
+  homeserver: string; // e.g. "https://matrix.org"
+  accessToken?: string; // stored after login
+  roomId?: string; // per-channel room ID (created/joined on first use)
+}
 
 export interface Config {
   channel: string;
-  userSessionId: string;
+  transport: Transport;
+  userId: string; // transport-agnostic user ID (Session hex or Matrix @user:server)
+  matrixConfig?: MatrixConfig; // present when transport === "matrix"
   mode: Mode;
   backend: Backend;
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
@@ -96,14 +105,14 @@ export interface LLMManager {
 export type ClaudeStatus = LLMStatus;
 export type ClaudeManager = LLMManager;
 
-// -- Session --
+// -- Transport --
 
 export interface IncomingAttachment {
   id: string;
   contentType?: string;
   name?: string;
   size?: number;
-  /** Raw session.js attachment for getFile() */
+  /** Raw transport-specific attachment for getFile() */
   _raw: unknown;
 }
 
@@ -112,7 +121,7 @@ export interface IncomingMessage {
   attachments: IncomingAttachment[];
 }
 
-export interface SessionClient {
+export interface TransportClient {
   startListening(onMessage: (msg: IncomingMessage) => void): Promise<void>;
   send(text: string): Promise<void>;
   sendImage(png: Uint8Array, caption?: string): Promise<void>;
@@ -120,8 +129,11 @@ export interface SessionClient {
   setAvatar(png: Uint8Array): Promise<void>;
   reuploadAvatar(): Promise<void>;
   getFile(attachment: IncomingAttachment): Promise<File>;
-  getSessionId(): string;
+  getIdentity(): string; // Session ID or Matrix user ID
 }
+
+// Legacy alias
+export type SessionClient = TransportClient;
 
 // -- Commands --
 
