@@ -117,11 +117,16 @@ export async function createSessionClient(config: Config): Promise<TransportClie
 
     await connectPoller("initial");
 
+    // The poller syncs config messages from the network, including old ones
+    // with stale display names. Due to a bug in session.js (it picks the oldest
+    // config message instead of the newest), every poll cycle overwrites our
+    // display name. Intercept and force it back to what identity.json says.
+    session.on("syncDisplayName", () => {
+      (session as any).displayName = identity.displayName;
+      console.log(`[session] Overrode synced display name back to "${identity.displayName}"`);
+    });
+
     // Broadcast display name to the network after poller connects.
-    // setMnemonic calls setDisplayName but doesn't await it (sync vs async),
-    // and the poller may overwrite the local display name with an old synced
-    // config message from the network. Re-calling setDisplayName here ensures
-    // the network config is updated with the current name.
     try {
       await session.setDisplayName(identity.displayName);
       console.log(`[session] Display name broadcast: "${identity.displayName}"`);
