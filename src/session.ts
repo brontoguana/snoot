@@ -117,6 +117,18 @@ export async function createSessionClient(config: Config): Promise<TransportClie
 
     await connectPoller("initial");
 
+    // Broadcast display name to the network after poller connects.
+    // setMnemonic calls setDisplayName but doesn't await it (sync vs async),
+    // and the poller may overwrite the local display name with an old synced
+    // config message from the network. Re-calling setDisplayName here ensures
+    // the network config is updated with the current name.
+    try {
+      await session.setDisplayName(identity.displayName);
+      console.log(`[session] Display name broadcast: "${identity.displayName}"`);
+    } catch (err) {
+      console.error(`[session] Failed to broadcast display name:`, err);
+    }
+
     // Auto-recover poller when Session network dies (e.g. "Ran out of swarms for polling").
     // The poller throws unhandled rejections and stops — we catch them and reconnect.
     let reconnecting = false;
