@@ -75,6 +75,18 @@ export async function createSessionClient(config: Config): Promise<TransportClie
   const session = new Session();
   session.setMnemonic(identity.mnemonic, identity.displayName);
 
+  // Lock displayName so the polling code can't overwrite it.
+  // session.js has a bug where it picks the oldest config message from the
+  // network and overwrites displayName every poll cycle. The syncDisplayName
+  // event fires *before* the overwrite, so an event handler can't fix it.
+  // Instead we use defineProperty to make the property read-only (returning
+  // whatever identity.json says) while silently ignoring all writes.
+  Object.defineProperty(session, "displayName", {
+    get: () => identity.displayName,
+    set: () => {},  // ignore writes from polling code
+    configurable: true,
+  });
+
   // Restore cached avatar metadata directly onto the session instance.
   // This makes the avatar URL+key available immediately so the very first
   // outgoing message includes avatar info (no re-upload needed).
@@ -116,15 +128,6 @@ export async function createSessionClient(config: Config): Promise<TransportClie
     }
 
     await connectPoller("initial");
-
-    // The poller syncs config messages from the network, including old ones
-    // with stale display names. Due to a bug in session.js (it picks the oldest
-    // config message instead of the newest), every poll cycle overwrites our
-    // display name. Intercept and force it back to what identity.json says.
-    session.on("syncDisplayName", () => {
-      (session as any).displayName = identity.displayName;
-      console.log(`[session] Overrode synced display name back to "${identity.displayName}"`);
-    });
 
     // Broadcast display name to the network after poller connects.
     try {
