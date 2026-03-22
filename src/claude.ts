@@ -14,6 +14,7 @@ export function createClaudeManager(config: Config): LLMManager {
   let rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
   let apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
   let activityCallbacks: Array<(line: string) => void> = [];
+  let toolUseCallbacks: Array<(detail: string) => void> = [];
   // Response queue: resolvers waiting for result messages
   let responseResolvers: Array<{
     resolve: (text: string) => void;
@@ -296,6 +297,7 @@ export function createClaudeManager(config: Config): LLMManager {
               const detail = formatToolUse(block.name, block.input);
               console.log(`[claude] Tool use: ${detail}`);
               emitActivity(`🔧 ${detail}`);
+              for (const cb of toolUseCallbacks) cb(detail);
             }
           }
         }
@@ -510,6 +512,10 @@ export function createClaudeManager(config: Config): LLMManager {
     activityCallbacks.push(cb);
   }
 
+  function onToolUse(cb: (detail: string) => void): void {
+    toolUseCallbacks.push(cb);
+  }
+
   function getStatus(): LLMStatus {
     return {
       alive,
@@ -520,5 +526,5 @@ export function createClaudeManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
 }

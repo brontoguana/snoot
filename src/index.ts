@@ -828,8 +828,7 @@ Options:
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
   --backend <backend>   LLM backend: claude, gemini (default: claude)
   --budget <usd>        Max budget per message in USD (no limit by default)
-  --compact-at <n>      Trigger compaction at N message pairs (default: 20)
-  --window <n>          Keep N pairs after compaction (default: 15)
+  --context-budget <n>  Context budget in tokens (default: 100000)
   --fg                  Run in foreground instead of daemonizing
 
 Commands:
@@ -886,8 +885,7 @@ Commands:
   let mode: Mode = "coding";
   let backend: Backend = "claude";
   let budgetUsd: number | undefined = undefined;
-  let compactAt = 20;
-  let windowSize = 15;
+  let contextBudget = 100_000;
   let foreground = false;
   let backendFromCli = false;
 
@@ -915,11 +913,8 @@ Commands:
         budgetUsd = parseFloat(args[++i] ?? "");
         if (isNaN(budgetUsd)) budgetUsd = undefined;
         break;
-      case "--compact-at":
-        compactAt = parseInt(args[++i] ?? "20", 10);
-        break;
-      case "--window":
-        windowSize = parseInt(args[++i] ?? "15", 10);
+      case "--context-budget":
+        contextBudget = parseInt(args[++i] ?? "100000", 10);
         break;
       case "--fg":
         foreground = true;
@@ -1006,8 +1001,7 @@ Commands:
     model: savedModel,
     effort: savedEffort,
     budgetUsd,
-    compactAt,
-    windowSize,
+    contextBudget,
     baseDir,
     workDir: process.cwd(),
     cliPath,
@@ -1217,7 +1211,7 @@ async function main(): Promise<void> {
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
-  console.log(`  Compact at: ${config.compactAt} pairs, window: ${config.windowSize}`);
+  console.log(`  Context budget: ${config.contextBudget} tokens`);
 
   console.log(`  CLI path: ${config.cliPath || "(not found)"}`);
   if (!config.cliPath) {

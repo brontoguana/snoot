@@ -56,6 +56,7 @@ export function createProxy(config: Config) {
   type BufferEntry = { type: "text"; content: string } | { type: "tool"; content: string };
   let chunkBuffer: BufferEntry[] = [];
   let textCharsSent = 0;
+  let contextTrace: string[] = []; // full trace for context: text + tool-use interleaved
   const FLUSH_INTERVAL = 30_000;
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
@@ -142,10 +143,15 @@ export function createProxy(config: Config) {
 
     llm.onChunk((text) => {
       chunkBuffer.push({ type: "text", content: text });
+      contextTrace.push(text);
       // Stream LLM output to watch log in real-time
       const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
       const logLines = text.split('\n').map(l => `${time}  │ ${l}\n`).join('');
       appendFileSync(watchLogPath, logLines);
+    });
+
+    llm.onToolUse((detail) => {
+      contextTrace.push(`[${detail}]`);
     });
 
     llm.onActivity((line) => {
@@ -817,6 +823,7 @@ export function createProxy(config: Config) {
     // Regular message — build full context and spawn fresh process
     const promptFile = context.buildPrompt();
     chunkBuffer = [];
+    contextTrace = [];
     textCharsSent = 0;
     llm.send(text, promptFile);
 
@@ -874,15 +881,14 @@ export function createProxy(config: Config) {
         return;
       }
 
-      // Record the exchange in context (text only, strip SVGs)
-      const fullResponse = response || "";
-      const contextResponse = fullResponse
+      // Record the exchange in context with full tool-use trace
+      const fullTrace = contextTrace.join("")
         .replace(/<svg\s[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>[\s\S]*?<\/svg>/g, "[image]")
         .replace(/<attach>[\s\S]*?<\/attach>/g, "[attachment]");
       const pair = {
         id: context.nextPairId(),
         user: text,
-        assistant: contextResponse,
+        assistant: fullTrace || response || "",
         timestamp: Date.now(),
       };
       await context.append(pair);

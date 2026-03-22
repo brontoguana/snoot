@@ -20,8 +20,7 @@ export interface Config {
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
   effort?: string; // effort level: "low", "medium", "high", "max" (Claude only)
   budgetUsd?: number; // undefined = no budget limit
-  compactAt: number; // trigger compaction when recent pairs exceed this
-  windowSize: number; // keep this many pairs after compaction
+  contextBudget: number; // target context size in estimated tokens (default 100000)
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
   cliPath?: string; // resolved full path to CLI binary (claude/gemini)
@@ -98,6 +97,7 @@ export interface LLMManager {
   onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
   onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void;
   onActivity(cb: (line: string) => void): void;
+  onToolUse(cb: (detail: string) => void): void;
   getStatus(): LLMStatus;
 }
 

@@ -146,8 +146,7 @@ On Linux this uses @reboot cron entries. On Windows it creates Task Scheduler lo
 | `--mode <mode>` | Tool mode: `chat`, `research`, or `coding` | `coding` |
 | `--backend <backend>` | AI backend: `claude` or `gemini` | `claude` |
 | `--budget <usd>` | Max budget per message in USD | unlimited |
-| `--compact-at <n>` | Trigger compaction at N message pairs | `20` |
-| `--window <n>` | Keep N pairs after compaction | `15` |
+| `--context-budget <n>` | Context budget in tokens before compaction | `100000` |
 | `--fg` | Run in foreground instead of daemonizing | off |
 
 Budget can also be set globally in `~/.snoot/config.json`:
@@ -212,11 +211,11 @@ The avatar is cached and restored automatically when the instance restarts.
 
 Snoot manages conversation context across ephemeral AI processes:
 
-- **Recent messages** are kept in a sliding window (`recent.jsonl`)
-- **Compaction** runs automatically when the window hits the threshold — older messages are summarized by a fast model (Haiku) and the window is trimmed
-- **Pins** survive compaction, ensuring important context is never lost
-- **Daily archives** (`archive/archive-YYYY-MM-DD.jsonl`) keep a full append-only history with 30-day retention
-- **Summary** (`summary.md`) is a rolling compacted summary fed to each new AI process
+- **Full-fidelity history** — message pairs include complete tool-use traces (file reads, edits, bash commands), not just text responses. Each new AI process sees exactly what previous processes did.
+- **Token-budget compaction** — context is measured in estimated tokens (default 100k). When it exceeds 110% of the budget, only the oldest pairs are summarized by Sonnet and trimmed. The vast majority of history remains intact.
+- **Pins** survive compaction, ensuring important context is never lost.
+- **Daily archives** (`archive/archive-YYYY-MM-DD.jsonl`) keep a full append-only history with 30-day retention.
+- **Summary** (`summary.md`) is a rolling compacted summary fed to each new AI process.
 
 All state lives in `.snoot/<channel>/` within your project directory.
 

@@ -86,7 +86,7 @@ export function handleCommand(
           `${statusName}: ${llm.isAlive() ? "processing" : "idle"}`,
           `Messages: ${state.totalPairs} total, ${context.getRecent().length} in window`,
           `Pins: ${state.pins.length}`,
-          `Compaction at: ${config.compactAt} messages`,
+          `Context budget: ${config.contextBudget} tokens`,
         ].join("\n"),
       };
     }

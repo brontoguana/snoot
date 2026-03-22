@@ -404,6 +404,10 @@ export function createGeminiManager(config: Config): LLMManager {
     activityCallbacks.push(cb);
   }
 
+  function onToolUse(cb: (detail: string) => void): void {
+    // Gemini tool use is captured via activity callbacks — no-op here for interface compat
+  }
+
   function getStatus(): LLMStatus {
     return {
       alive,
@@ -414,5 +418,5 @@ export function createGeminiManager(config: Config): LLMManager {
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, getStatus };
+  return { isAlive, send, waitForResponse, kill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
 }

@@ -145,28 +145,60 @@ export function createContextStore(config: Config): ContextStore {
     return promptPath;
   }
 
+  /** Estimate token count from character count (~4 chars per token) */
+  function estimateTokens(chars: number): number {
+    return Math.ceil(chars / 4);
+  }
+
+  /** Calculate total context tokens (summary + pins + recent pairs) */
+  function currentContextTokens(): number {
+    let chars = summary.length;
+    for (const pin of state.pins) {
+      chars += pin.text.length + 20; // overhead for pin formatting
+    }
+    for (const pair of recent) {
+      chars += pair.user.length + pair.assistant.length + 30; // overhead for User:/Assistant: labels
+    }
+    return estimateTokens(chars);
+  }
+
   function needsCompaction(): boolean {
-    return recent.length > config.compactAt;
+    // Compact when context exceeds 110% of budget
+    const threshold = config.contextBudget * 1.1;
+    return currentContextTokens() > threshold;
   }
 
   async function compact(): Promise<void> {
-    if (recent.length <= config.windowSize) return;
+    const budget = config.contextBudget;
+    const current = currentContextTokens();
+    if (current <= budget) return;
 
-    // Separate pinned from unpinned
-    const pinned = recent.filter((p) => p.pinned);
+    // Calculate how many tokens over budget we are
+    const excess = current - budget;
+
+    // Find the oldest unpinned pairs that account for ~the excess
     const unpinned = recent.filter((p) => !p.pinned);
+    if (unpinned.length <= 1) return; // nothing to compact
 
-    // Calculate how many unpinned to remove
-    const targetUnpinned = config.windowSize - pinned.length;
-    if (targetUnpinned <= 0 || unpinned.length <= targetUnpinned) return;
+    let accumulated = 0;
+    let compactCount = 0;
+    for (const pair of unpinned) {
+      const pairTokens = estimateTokens(pair.user.length + pair.assistant.length);
+      accumulated += pairTokens;
+      compactCount++;
+      if (accumulated >= excess) break;
+    }
 
-    const toCompact = unpinned.slice(0, unpinned.length - targetUnpinned);
-    const toKeep = unpinned.slice(unpinned.length - targetUnpinned);
+    // Always compact at least 1 pair
+    compactCount = Math.max(1, compactCount);
+
+    const toCompact = unpinned.slice(0, compactCount);
+    const toKeep = unpinned.slice(compactCount);
 
     // Build compaction prompt
     const compactionInput = formatForCompaction(toCompact, summary);
 
-    console.log(`[context] Compacting ${toCompact.length} pairs...`);
+    console.log(`[context] Compacting ${toCompact.length} pairs (~${accumulated} tokens excess of ${budget} budget)...`);
 
     try {
       const newSummary = await runCompaction(compactionInput);
@@ -174,11 +206,13 @@ export function createContextStore(config: Config): ContextStore {
       writeFileSync(summaryPath, summary);
 
       // Rebuild recent: pinned (in order) + kept unpinned
+      const pinned = recent.filter((p) => p.pinned);
       recent = [...pinned, ...toKeep].sort((a, b) => a.id - b.id);
       saveRecent();
       saveState();
 
-      console.log(`[context] Compaction complete. Window: ${recent.length} pairs`);
+      const newTokens = currentContextTokens();
+      console.log(`[context] Compaction complete. ${recent.length} pairs, ~${newTokens} tokens`);
     } catch (err) {
       console.error("[context] Compaction failed:", err);
     }
@@ -201,15 +235,20 @@ export function createContextStore(config: Config): ContextStore {
   }
 
   async function runCompaction(input: string): Promise<string> {
-    const prompt = `Summarize this conversation history into a concise rolling summary. Preserve:
-- All code snippets and file paths mentioned
+    const prompt = `Summarize this conversation history into a concise rolling summary. The conversation includes both text responses and tool-use traces (file reads, edits, bash commands, searches shown in [brackets]).
+
+Preserve:
+- All file paths read, edited, or created — and what was done to them
+- Code changes: what was modified, added, or removed and why
+- Bash commands run and their outcomes (especially errors)
 - Decisions made and their reasoning
-- Key technical facts and requirements
+- Key technical facts, requirements, and constraints
 - Any tasks in progress or planned
 
 Discard:
 - Pleasantries and small talk
 - Redundant explanations
+- Full file contents (summarize what was found instead)
 - Rejected alternatives (unless the rejection reason is important)
 
 If there is a current summary, integrate the new messages into it rather than starting fresh.
@@ -222,7 +261,7 @@ ${input}`;
     let proc;
     try {
       proc = Bun.spawn(
-        ["claude", "-p", "--model", "haiku", "--no-session-persistence"],
+        ["claude", "-p", "--model", "sonnet", "--no-session-persistence"],
         {
           stdin: "pipe",
           stdout: "pipe",
