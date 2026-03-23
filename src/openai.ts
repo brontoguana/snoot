@@ -1,5 +1,5 @@
-import { resolve, basename, dirname } from "path";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { resolve, basename, dirname, join } from "path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "fs";
 import type { Config, LLMManager, LLMStatus, Mode } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
@@ -7,6 +7,10 @@ const MAX_TURNS = 50;
 const RATE_LIMIT_RETRY_DELAY = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
 const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
+
+// Chrome's reduced/frozen UA string — Chrome committed to freezing this format,
+// so it won't go stale. Sites check for "Chrome/" presence, not the exact version.
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
 // -- Tool Definitions (OpenAI function calling format) --
 
@@ -144,13 +148,96 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "WebFetch",
-        description: "Fetch content from a URL and return it as text.",
+        description: "Fetch content from a URL and return it as text. Uses a browser user agent.",
         parameters: {
           type: "object",
           properties: {
             url: { type: "string", description: "The URL to fetch" },
           },
           required: ["url"],
+        },
+      },
+    });
+  }
+
+  if (names.includes("WebSearch") || names.includes("WebFetch")) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "WebSearch",
+        description: "Search the web using DuckDuckGo. Returns top results with titles, URLs, and snippets.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "The search query" },
+            num_results: { type: "number", description: "Max results to return (default 10, max 20)" },
+          },
+          required: ["query"],
+        },
+      },
+    });
+  }
+
+  // Think — available whenever tools are available (helps weaker models plan)
+  if (names.length > 0) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "Think",
+        description: "Use this tool to think through a problem step by step before taking action. The input is not executed or processed — it just helps you reason. Use it before complex tasks, multi-step plans, or when you need to weigh options.",
+        parameters: {
+          type: "object",
+          properties: {
+            thought: { type: "string", description: "Your reasoning or plan" },
+          },
+          required: ["thought"],
+        },
+      },
+    });
+  }
+
+  // ListDirectory — available alongside Read (research + coding)
+  if (names.includes("Read")) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "ListDirectory",
+        description: "List files and directories at a given path. Returns names with type indicators (/ for directories) and file sizes.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Directory path to list (default: working directory)" },
+          },
+        },
+      },
+    });
+  }
+
+  // Patch — available alongside Edit (coding only). Multi-edit in one call.
+  if (names.includes("Edit")) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "Patch",
+        description: "Apply multiple edits to a single file in one call. Each edit replaces old_string with new_string. Edits are applied sequentially. Each old_string must be unique in the file at the time it is applied.",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string", description: "Absolute path to the file" },
+            edits: {
+              type: "array",
+              description: "Array of edits to apply sequentially",
+              items: {
+                type: "object",
+                properties: {
+                  old_string: { type: "string", description: "The exact string to find" },
+                  new_string: { type: "string", description: "The replacement string" },
+                },
+                required: ["old_string", "new_string"],
+              },
+            },
+          },
+          required: ["file_path", "edits"],
         },
       },
     });
@@ -172,10 +259,14 @@ function formatToolUse(name: string, args: any): string {
     case "Read": return `Read ${args?.file_path ? shortPath(args.file_path) : ""}`;
     case "Edit": return `Edit ${args?.file_path ? shortPath(args.file_path) : ""}`;
     case "Write": return `Write ${args?.file_path ? shortPath(args.file_path) : ""}`;
+    case "Patch": return `Patch ${args?.file_path ? shortPath(args.file_path) : ""} (${args?.edits?.length || 0} edits)`;
     case "Bash": return `Bash: ${(args?.command || "").slice(0, 120)}`;
     case "Grep": return `Grep "${args?.pattern || ""}" in ${args?.path ? shortPath(args.path) : "."}`;
     case "Glob": return `Glob ${args?.pattern || ""}`;
+    case "ListDirectory": return `ListDir ${args?.path ? shortPath(args.path) : "."}`;
     case "WebFetch": return `WebFetch: ${(args?.url || "").slice(0, 100)}`;
+    case "WebSearch": return `WebSearch: ${(args?.query || "").slice(0, 100)}`;
+    case "Think": return `Think (${(args?.thought || "").slice(0, 60)}...)`;
     default: return name;
   }
 }
@@ -186,10 +277,14 @@ async function executeTool(name: string, args: any, workDir: string): Promise<st
       case "Read": return await toolRead(args, workDir);
       case "Edit": return await toolEdit(args, workDir);
       case "Write": return await toolWrite(args, workDir);
+      case "Patch": return await toolPatch(args, workDir);
       case "Bash": return await toolBash(args, workDir);
       case "Grep": return await toolGrep(args, workDir);
       case "Glob": return await toolGlob(args, workDir);
+      case "ListDirectory": return await toolListDir(args, workDir);
       case "WebFetch": return await toolWebFetch(args);
+      case "WebSearch": return await toolWebSearch(args);
+      case "Think": return "OK";
       default: return `Unknown tool: ${name}`;
     }
   } catch (err) {
@@ -283,11 +378,81 @@ async function toolGlob(args: any, workDir: string): Promise<string> {
   return matches.join("\n") || "(no matches)";
 }
 
+async function toolListDir(args: any, workDir: string): Promise<string> {
+  const dirPath = args.path ? resolve(workDir, args.path) : workDir;
+  if (!existsSync(dirPath)) return `Error: Directory not found: ${args.path || "."}`;
+
+  const entries = readdirSync(dirPath);
+  const lines: string[] = [];
+
+  for (const entry of entries.sort()) {
+    try {
+      const fullPath = join(dirPath, entry);
+      const stat = statSync(fullPath);
+      if (stat.isDirectory()) {
+        lines.push(`${entry}/`);
+      } else {
+        const size = stat.size;
+        const sizeStr = size < 1024 ? `${size}B`
+          : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)}K`
+          : `${(size / (1024 * 1024)).toFixed(1)}M`;
+        lines.push(`${entry}  (${sizeStr})`);
+      }
+    } catch {
+      lines.push(`${entry}  (unreadable)`);
+    }
+    if (lines.length >= 500) {
+      lines.push("... (truncated at 500 entries)");
+      break;
+    }
+  }
+
+  return lines.join("\n") || "(empty directory)";
+}
+
+async function toolPatch(args: any, workDir: string): Promise<string> {
+  const filePath = resolve(workDir, args.file_path);
+  if (!existsSync(filePath)) return `Error: File not found: ${args.file_path}`;
+  if (!Array.isArray(args.edits) || args.edits.length === 0) return "Error: edits array is empty";
+
+  let content = readFileSync(filePath, "utf-8");
+  const results: string[] = [];
+
+  for (let i = 0; i < args.edits.length; i++) {
+    const edit = args.edits[i];
+    if (!edit.old_string || edit.new_string === undefined) {
+      results.push(`Edit ${i + 1}: Error — missing old_string or new_string`);
+      continue;
+    }
+    const idx = content.indexOf(edit.old_string);
+    if (idx === -1) {
+      results.push(`Edit ${i + 1}: Error — old_string not found`);
+      continue;
+    }
+    if (content.indexOf(edit.old_string, idx + edit.old_string.length) !== -1) {
+      results.push(`Edit ${i + 1}: Error — old_string is not unique`);
+      continue;
+    }
+    content = content.slice(0, idx) + edit.new_string + content.slice(idx + edit.old_string.length);
+    results.push(`Edit ${i + 1}: OK`);
+  }
+
+  writeFileSync(filePath, content);
+  return results.join("\n");
+}
+
 async function toolWebFetch(args: any): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const resp = await fetch(args.url, { signal: controller.signal });
+    const resp = await fetch(args.url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
     const text = await resp.text();
     if (text.length > 50_000) {
       return text.slice(0, 50_000) + "\n... (truncated)";
@@ -296,6 +461,95 @@ async function toolWebFetch(args: any): Promise<string> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function toolWebSearch(args: any): Promise<string> {
+  const query = (args.query || "").trim();
+  if (!query) return "Error: empty search query";
+  const maxResults = Math.min(args.num_results || 10, 20);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+
+  try {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    const html = await resp.text();
+    return parseDDGResults(html, maxResults);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseDDGResults(html: string, maxResults: number): string {
+  const results: Array<{ title: string; url: string; snippet: string }> = [];
+
+  // Extract result blocks — each contains a result__a link and a result__snippet
+  // DuckDuckGo HTML format:
+  //   <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=ENCODED_URL&...">Title</a>
+  //   <a class="result__snippet" href="...">Snippet text</a>
+
+  // Match result__a links
+  const linkRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+
+  const links: Array<{ url: string; title: string }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = linkRegex.exec(html)) !== null) {
+    let href = match[1];
+    const title = stripHtml(match[2]).trim();
+
+    // Decode DuckDuckGo redirect URL
+    const uddgMatch = href.match(/[?&]uddg=([^&]+)/);
+    if (uddgMatch) {
+      href = decodeURIComponent(uddgMatch[1]);
+    } else if (href.startsWith("//")) {
+      href = "https:" + href;
+    }
+
+    if (title && href && !href.includes("duckduckgo.com")) {
+      links.push({ url: href, title });
+    }
+  }
+
+  const snippets: string[] = [];
+  while ((match = snippetRegex.exec(html)) !== null) {
+    snippets.push(stripHtml(match[1]).trim());
+  }
+
+  for (let i = 0; i < Math.min(links.length, maxResults); i++) {
+    results.push({
+      title: links[i].title,
+      url: links[i].url,
+      snippet: snippets[i] || "",
+    });
+  }
+
+  if (results.length === 0) return "(no results found)";
+
+  return results.map((r, i) =>
+    `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`
+  ).join("\n\n");
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")     // strip tags
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ");       // collapse whitespace
 }
 
 // -- Streaming SSE parser --
