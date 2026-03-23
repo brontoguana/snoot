@@ -93,7 +93,7 @@ export function createGeminiManager(config: Config): LLMManager {
         spawnedPids.delete(pid);
       }
     }
-  }, 30_000);
+  }, 5_000);
   if (orphanCheckTimer.unref) orphanCheckTimer.unref();
 
   function emitActivity(line: string): void {

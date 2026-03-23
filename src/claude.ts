@@ -93,7 +93,7 @@ export function createClaudeManager(config: Config): LLMManager {
         spawnedPids.delete(pid);
       }
     }
-  }, 30_000);
+  }, 5_000);
   // Don't let this timer keep the process alive
   if (orphanCheckTimer.unref) orphanCheckTimer.unref();
 
