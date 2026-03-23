@@ -6,6 +6,7 @@ import { createSessionClient } from "./session.js";
 import { createMatrixClient } from "./matrix.js";
 import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
+import { createOpenAIManager } from "./openai.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
 import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks, initResvg } from "./profile.js";
@@ -16,8 +17,7 @@ const IS_WINDOWS = process.platform === "win32";
 function createLLM(config: Config): LLMManager {
   const ep = config.endpointConfig;
   if (ep?.type === "openai") {
-    // Phase 2: return createOpenAIManager(config);
-    throw new Error(`OpenAI-compatible endpoints not yet implemented. Use a CLI endpoint.`);
+    return createOpenAIManager(config);
   }
   const cli = ep?.cli || config.backend;
   return cli === "gemini"
