@@ -10,7 +10,7 @@ import { createOpenAIManager } from "./openai.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
 import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks, initResvg } from "./profile.js";
-import { findCliPath, loadEndpoints, endpointDisplayName } from "./utils.js";
+import { findCliPath, loadEndpoints, saveEndpoint, removeEndpoint, endpointDisplayName } from "./utils.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -480,11 +480,12 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // /endpoint — switch or list endpoints (bypass queue)
+    // /endpoint — switch, list, add, or remove endpoints (bypass queue)
     const endpointMatch = trimmed.match(/^\/endpoint\s*(.*)/i);
     if (endpointMatch !== null) {
       const endpointArg = endpointMatch[1].trim();
       if (!endpointArg) {
+        // List all endpoints
         const endpoints = loadEndpoints();
         const lines = Object.entries(endpoints).map(([name, ep]) => {
           const active = name === config.backend ? " (active)" : "";
@@ -492,11 +493,75 @@ export function createProxy(config: Config) {
           return `  ${name} — ${desc}${active}`;
         });
         const epMsg = lines.length > 0
-          ? `Endpoints:\n${lines.join("\n")}`
-          : "No endpoints configured. Use 'snoot setup endpoint' to add.";
+          ? `Endpoints:\n${lines.join("\n")}\n\nUse /endpoint <name> to switch, /endpoint add or /endpoint remove to manage.`
+          : "No endpoints configured.\n\nUse /endpoint add <name> <url> <model> to add one.";
         sessionClient.send(epMsg).catch(() => {});
         return;
       }
+
+      const endpointParts = endpointArg.split(/\s+/);
+      const subCmd = endpointParts[0].toLowerCase();
+
+      // /endpoint add <name> [url] [model] [apikey]
+      if (subCmd === "add" || subCmd === "create" || subCmd === "new") {
+        const epName = endpointParts[1];
+        if (!epName) {
+          sessionClient.send(
+            "Usage:\n" +
+            "  /endpoint add <name> <url> [model] [apikey]\n" +
+            "  /endpoint add <name>  (CLI, auto-detect binary)\n\n" +
+            "Examples:\n" +
+            "  /endpoint add local http://localhost:11434/v1 qwen2.5:72b\n" +
+            "  /endpoint add deepseek https://api.deepseek.com/v1 deepseek-chat sk-abc123"
+          ).catch(() => {});
+          return;
+        }
+        const epUrl = endpointParts[2];
+        if (epUrl && (epUrl.startsWith("http://") || epUrl.startsWith("https://"))) {
+          // OpenAI-compatible endpoint
+          const epModel = endpointParts[3] || undefined;
+          const epApiKey = endpointParts[4] || undefined;
+          const ep: EndpointConfig = { type: "openai", url: epUrl, model: epModel, apiKey: epApiKey };
+          saveEndpoint(epName, ep);
+          const parts = [`Endpoint "${epName}" added (openai: ${epUrl})`];
+          if (epModel) parts.push(`Model: ${epModel}`);
+          parts.push(`\nUse /endpoint ${epName} to switch to it.`);
+          sessionClient.send(parts.join("\n")).catch(() => {});
+        } else {
+          // CLI endpoint
+          const cliName = epUrl || epName; // optional second arg overrides binary name
+          const ep: EndpointConfig = { type: "cli", cli: cliName };
+          saveEndpoint(epName, ep);
+          const cliPath = findCliPath(cliName);
+          const status = cliPath ? `found at ${cliPath}` : "NOT found on PATH";
+          sessionClient.send(`Endpoint "${epName}" added (cli: ${cliName}, ${status})\n\nUse /endpoint ${epName} to switch to it.`).catch(() => {});
+        }
+        watchLog(`➕ Added endpoint: ${epName}`);
+        return;
+      }
+
+      // /endpoint remove <name>
+      if (subCmd === "remove" || subCmd === "delete" || subCmd === "rm") {
+        const epName = endpointParts[1];
+        if (!epName) {
+          sessionClient.send("Usage: /endpoint remove <name>").catch(() => {});
+          return;
+        }
+        if (epName === config.backend) {
+          sessionClient.send(`Can't remove "${epName}" — it's currently active. Switch to another endpoint first.`).catch(() => {});
+          return;
+        }
+        const removed = removeEndpoint(epName);
+        if (removed) {
+          watchLog(`➖ Removed endpoint: ${epName}`);
+          sessionClient.send(`Endpoint "${epName}" removed.`).catch(() => {});
+        } else {
+          sessionClient.send(`No endpoint named "${epName}".`).catch(() => {});
+        }
+        return;
+      }
+
+      // Otherwise: switch to the named endpoint
       watchLog(`🔄 Switching to endpoint ${endpointArg}`);
       switchEndpoint(endpointArg).then(msg => sessionClient.send(msg).catch(() => {}));
       return;

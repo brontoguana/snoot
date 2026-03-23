@@ -1,7 +1,9 @@
 import { resolve, delimiter as PATH_DELIMITER } from "path";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
 import { homedir } from "os";
 import type { EndpointConfig } from "./types.js";
+
+const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -51,6 +53,31 @@ export function loadEndpoints(): Record<string, EndpointConfig> {
     endpoints.gemini = { type: "cli", cli: "gemini" };
   }
   return endpoints;
+}
+
+/** Save an endpoint to global config */
+export function saveEndpoint(name: string, ep: EndpointConfig): void {
+  const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
+  let config: Record<string, unknown> = {};
+  try { config = JSON.parse(readFileSync(configFile, "utf-8")); } catch {}
+  if (!config.endpoints) config.endpoints = {};
+  (config.endpoints as Record<string, EndpointConfig>)[name] = ep;
+  mkdirSync(GLOBAL_SNOOT_DIR, { recursive: true });
+  writeFileSync(configFile, JSON.stringify(config, null, 2));
+  try { chmodSync(configFile, 0o600); } catch {}
+}
+
+/** Remove an endpoint from global config. Returns true if it existed. */
+export function removeEndpoint(name: string): boolean {
+  const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
+  let config: Record<string, unknown> = {};
+  try { config = JSON.parse(readFileSync(configFile, "utf-8")); } catch {}
+  const endpoints = config.endpoints as Record<string, EndpointConfig> | undefined;
+  if (!endpoints?.[name]) return false;
+  delete endpoints[name];
+  writeFileSync(configFile, JSON.stringify(config, null, 2));
+  try { chmodSync(configFile, 0o600); } catch {}
+  return true;
 }
 
 /** Get display name for an endpoint */

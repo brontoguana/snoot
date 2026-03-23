@@ -310,7 +310,6 @@ function handleSetupEndpoint(args: string[]): never {
     console.log(`  URL: ${endpoint.url}`);
     if (endpoint.model) console.log(`  Model: ${endpoint.model}`);
     if (endpoint.apiKey) console.log(`  API key: ${endpoint.apiKey.slice(0, 8)}...`);
-    console.log(`\nNote: OpenAI-compatible endpoints are not yet supported at runtime. Coming soon.`);
   }
 
   process.exit(0);
