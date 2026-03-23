@@ -80,13 +80,19 @@ export function createClaudeManager(config: Config): LLMManager {
     for (const cb of activityCallbacks) cb(line);
   }
 
+  function shortPath(p: string): string {
+    const dir = path.basename(path.dirname(p));
+    const file = path.basename(p);
+    return dir && dir !== "." ? `${dir}/${file}` : file;
+  }
+
   function formatToolUse(name: string, input: any): string {
     switch (name) {
-      case "Read": return `Read ${input?.file_path ? path.basename(input.file_path) : ""}`;
-      case "Edit": return `Edit ${input?.file_path ? path.basename(input.file_path) : ""}`;
-      case "Write": return `Write ${input?.file_path ? path.basename(input.file_path) : ""}`;
+      case "Read": return `Read ${input?.file_path ? shortPath(input.file_path) : ""}`;
+      case "Edit": return `Edit ${input?.file_path ? shortPath(input.file_path) : ""}`;
+      case "Write": return `Write ${input?.file_path ? shortPath(input.file_path) : ""}`;
       case "Bash": return `Bash: ${(input?.command || "").slice(0, 120)}`;
-      case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path ? path.basename(input.path) : "."}`;
+      case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path ? shortPath(input.path) : "."}`;
       case "Glob": return `Glob ${input?.pattern || ""}`;
       case "WebSearch": return `WebSearch: ${(input?.query || "").slice(0, 100)}`;
       case "WebFetch": return `WebFetch: ${(input?.url || "").slice(0, 100)}`;
