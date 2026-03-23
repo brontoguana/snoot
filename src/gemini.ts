@@ -342,9 +342,10 @@ export function createGeminiManager(config: Config): LLMManager {
     rateLimitRetryCount = 0;
     apiErrorRetryCount = 0;
 
-    // Queue guarantees no concurrent sends — log if this ever happens
+    // Queue should prevent concurrent sends, but watchdog timeout can bypass it
     if (proc && alive) {
-      console.error("[gemini] WARNING: send() called with running process — this shouldn't happen");
+      console.error("[gemini] WARNING: send() called with running process — killing old one");
+      forceKill();
     }
 
     // Build the full prompt: system prompt from file + user message

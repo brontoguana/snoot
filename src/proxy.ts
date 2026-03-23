@@ -552,6 +552,8 @@ export function createProxy(config: Config) {
       const stuckFor = Math.round((Date.now() - processingStartedAt) / 1000);
       console.error(`[proxy] Processing stuck for ${stuckFor}s — force-resetting`);
       watchLog(`⚠️ Processing stuck for ${stuckFor}s — force-resetting`);
+      // Kill the old LLM process so the old processQueue() unblocks and exits cleanly
+      llm.forceKill();
       processing = false;
     }
 
