@@ -1,7 +1,7 @@
 import { Session, Poller, ready } from "@session.js/client";
 import { generateSeedHex } from "@session.js/keypair";
 import { encode } from "@session.js/mnemonic";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
 import { basename, extname } from "path";
 import type { Config, TransportClient, IncomingAttachment, IncomingMessage } from "./types.js";
 
@@ -68,6 +68,7 @@ export async function createSessionClient(config: Config): Promise<TransportClie
     const sessionId = tempSession.getSessionID();
     identity = { mnemonic, sessionId, displayName: config.channel };
     writeFileSync(identityFile, JSON.stringify(identity, null, 2));
+    try { chmodSync(identityFile, 0o600); } catch {}
     console.log(`Created identity for channel "${config.channel}"`);
     console.log(`Session ID: ${sessionId}`);
   }
@@ -103,7 +104,17 @@ export async function createSessionClient(config: Config): Promise<TransportClie
 
   async function startListening(onMessage: (msg: IncomingMessage) => void): Promise<void> {
     const startedAt = Date.now();
-    const seenTimestamps = new Set<number>();
+    const seenTimestamps = new Map<number, number>(); // timestamp → time first seen
+    const SEEN_MAX_AGE = 5 * 60_000; // prune entries older than 5 minutes
+
+    // Periodically prune old entries so the map doesn't grow forever
+    const pruneTimer = setInterval(() => {
+      const cutoff = Date.now() - SEEN_MAX_AGE;
+      for (const [ts, seenAt] of seenTimestamps) {
+        if (seenAt < cutoff) seenTimestamps.delete(ts);
+      }
+    }, 60_000);
+    if (pruneTimer.unref) pruneTimer.unref();
 
     // Retry poller connection with exponential backoff — handles boot before
     // network is ready and transient network outages.
@@ -201,7 +212,7 @@ export async function createSessionClient(config: Config): Promise<TransportClie
       if (seenTimestamps.has(ts)) {
         return;
       }
-      seenTimestamps.add(ts);
+      seenTimestamps.set(ts, Date.now());
 
       const text = message.text || "";
       const rawAttachments: any[] = message.attachments || [];

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import "@session.js/bun-network";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync, watch as fsWatchFile } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync, chmodSync, watch as fsWatchFile } from "fs";
 import { resolve, dirname, basename, parse as parsePath, delimiter as PATH_DELIMITER } from "path";
 import { homedir } from "os";
 import type { Config, Mode, Backend, Transport, MatrixConfig } from "./types.js";
@@ -206,12 +206,14 @@ function handleSetUser(args: string[]): never {
   mkdirSync(GLOBAL_SNOOT_DIR, { recursive: true });
   const userFile = resolve(GLOBAL_SNOOT_DIR, "user.json");
   writeFileSync(userFile, JSON.stringify({ sessionId }));
+  try { chmodSync(userFile, 0o600); } catch {}
 
   const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
   const existing = existsSync(configFile) ? JSON.parse(readFileSync(configFile, "utf-8")) : {};
   existing.transport = "session";
   existing.userId = sessionId;
   writeFileSync(configFile, JSON.stringify(existing, null, 2));
+  try { chmodSync(configFile, 0o600); } catch {}
 
   console.log(`Global user Session ID saved.`);
   console.log(`  (Tip: use 'snoot setup session <id>' going forward)`);
@@ -241,6 +243,7 @@ function saveGlobalConfig(config: GlobalConfig): void {
   mkdirSync(GLOBAL_SNOOT_DIR, { recursive: true });
   const configFile = resolve(GLOBAL_SNOOT_DIR, "config.json");
   writeFileSync(configFile, JSON.stringify(config, null, 2));
+  try { chmodSync(configFile, 0o600); } catch {}
 }
 
 function detectTransport(userId: string): Transport {
@@ -286,11 +289,17 @@ Current config:`);
     saveGlobalConfig(config);
 
     // Also write legacy user.json for backward compat
-    writeFileSync(resolve(GLOBAL_SNOOT_DIR, "user.json"), JSON.stringify({ sessionId }));
+    const legacyUserFile = resolve(GLOBAL_SNOOT_DIR, "user.json");
+    writeFileSync(legacyUserFile, JSON.stringify({ sessionId }));
+    try { chmodSync(legacyUserFile, 0o600); } catch {}
 
     console.log(`Transport: session`);
     console.log(`User ID: ${sessionId}`);
     console.log(`Saved to ~/.snoot/config.json`);
+    console.log();
+    console.log(`NOTE: Snoot runs AI with full permissions (no confirmation prompts).`);
+    console.log(`Anyone who can message this bot can execute commands on this machine.`);
+    console.log(`Your Session identity IS your auth — keep it safe.`);
 
     if (wasMatrix) {
       await restartAllInstances("Transport switched to session");
@@ -381,6 +390,10 @@ Current config:`);
     console.log(`User ID: ${matrixUser}`);
     console.log(`Homeserver: ${homeserver}`);
     console.log(`Saved to ~/.snoot/config.json`);
+    console.log();
+    console.log(`NOTE: Snoot runs AI with full permissions (no confirmation prompts).`);
+    console.log(`Anyone who can message this bot can execute commands on this machine.`);
+    console.log(`Your Matrix credentials ARE your auth — keep them safe.`);
 
     if (wasSession && loadInstances().length > 0) {
       await restartAllInstances("Transport switched to matrix");
@@ -935,7 +948,9 @@ Commands:
   // Save to project-local if provided via --user
   if (userId && args.some((a, i) => a === "--user" && args[i + 1])) {
     mkdirSync(baseDir, { recursive: true });
-    writeFileSync(`${baseDir}/user.json`, JSON.stringify({ sessionId: userId }));
+    const projUserFile = `${baseDir}/user.json`;
+    writeFileSync(projUserFile, JSON.stringify({ sessionId: userId }));
+    try { chmodSync(projUserFile, 0o600); } catch {}
   }
 
   if (!userId) {
@@ -970,6 +985,8 @@ Commands:
   }
 
   // Load persisted settings (backend/model/effort) — CLI args override saved values
+  let savedModel: string | undefined;
+  let savedEffort: string | undefined;
   const settingsPath = `${baseDir}/settings.json`;
   if (existsSync(settingsPath)) {
     try {
@@ -977,9 +994,8 @@ Commands:
       if (!backendFromCli && saved.backend && ["claude", "gemini"].includes(saved.backend)) {
         backend = saved.backend;
       }
-      // model and effort are not CLI args, always restore from saved
-      if (saved.model) var savedModel: string | undefined = saved.model;
-      if (saved.effort) var savedEffort: string | undefined = saved.effort;
+      if (saved.model) savedModel = saved.model;
+      if (saved.effort) savedEffort = saved.effort;
     } catch {}
   }
 

@@ -653,9 +653,10 @@ export function createProxy(config: Config) {
     }
   }
 
-  async function handleCommandDirect(text: string): Promise<void> {
+  /** Execute a slash command. Returns true if a command was handled. */
+  async function executeCommand(text: string): Promise<boolean> {
     const cmdResult = handleCommand(text, config, context, llm);
-    if (!cmdResult) return;
+    if (!cmdResult) return false;
 
     const cmd = text.trim().toLowerCase();
     if (cmd === "/forget" || cmd === "/clear") {
@@ -667,7 +668,6 @@ export function createProxy(config: Config) {
         watchLog(`🔄 Restarting snoot`);
         if (llm.isAlive()) await llm.kill();
         await sessionClient.send(cmdResult.response);
-        // For /move, swap the channel name in selfCommand args
         let spawnCmd = config.selfCommand;
         if (cmdResult.moveChannel) {
           spawnCmd = spawnCmd.map(a => a === config.channel ? cmdResult.moveChannel! : a);
@@ -680,7 +680,7 @@ export function createProxy(config: Config) {
           stdin: "ignore",
         }).unref();
         process.exit(0);
-        return;
+        return true;
       }
       if (cmdResult.killProcess && llm.isAlive()) {
         watchLog(`🛑 Stopping process`);
@@ -695,6 +695,11 @@ export function createProxy(config: Config) {
     try {
       await sessionClient.send(cmdResult.response);
     } catch {}
+    return true;
+  }
+
+  async function handleCommandDirect(text: string): Promise<void> {
+    await executeCommand(text);
   }
 
   async function processQueue(): Promise<void> {
@@ -808,43 +813,7 @@ export function createProxy(config: Config) {
     }
 
     // Check for /commands
-    const cmdResult = handleCommand(text, config, context, llm);
-    if (cmdResult) {
-      // Handle /forget and /clear specially — reset context before sending response
-      const cmd = text.trim().toLowerCase();
-      if (cmd === "/forget" || cmd === "/clear") {
-        if (llm.isAlive()) await llm.kill();
-        await context.reset();
-      } else {
-        if (cmdResult.restartProcess || cmdResult.moveChannel) {
-          if (llm.isAlive()) await llm.kill();
-          await sessionClient.send(cmdResult.response);
-          // For /move, swap the channel name in selfCommand args
-          let spawnCmd = config.selfCommand;
-          if (cmdResult.moveChannel) {
-            spawnCmd = spawnCmd.map(a => a === config.channel ? cmdResult.moveChannel! : a);
-          }
-          Bun.spawn(spawnCmd, {
-            cwd: config.workDir,
-            env: process.env,
-            stdout: "inherit",
-            stderr: "inherit",
-            stdin: "ignore",
-          }).unref();
-          process.exit(0);
-          return;
-        }
-        if (cmdResult.killProcess && llm.isAlive()) {
-          await llm.kill();
-        }
-        if (cmdResult.triggerCompaction) {
-          await context.compact();
-        }
-      }
-
-      await sessionClient.send(cmdResult.response);
-      return;
-    }
+    if (await executeCommand(text)) return;
 
     // Regular message — build full context and spawn fresh process
     const promptFile = context.buildPrompt();
