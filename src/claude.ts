@@ -31,6 +31,7 @@ export function createClaudeManager(config: Config): LLMManager {
   let apiErrorRetryCount = 0;
   let pendingRetry = false;
   let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  const spawnedPids = new Set<number>(); // track all PIDs we've ever spawned
 
   function startHealthCheck(): void {
     stopHealthCheck();
@@ -75,6 +76,26 @@ export function createClaudeManager(config: Config): LLMManager {
       healthCheckTimer = null;
     }
   }
+
+  // Orphan checker: every 30s, verify no stale Claude processes are alive
+  const orphanCheckTimer = setInterval(() => {
+    const currentPid = proc?.pid;
+    for (const pid of spawnedPids) {
+      if (pid === currentPid) continue;
+      try {
+        process.kill(pid, 0); // existence check — throws if dead
+        // Still alive — this is an orphan
+        console.error(`[claude] ORPHAN DETECTED: pid ${pid} still alive (current: ${currentPid ?? "none"}) — killing`);
+        try { process.kill(pid, 9); } catch {}
+        spawnedPids.delete(pid);
+      } catch {
+        // Process is dead, clean it from the set
+        spawnedPids.delete(pid);
+      }
+    }
+  }, 30_000);
+  // Don't let this timer keep the process alive
+  if (orphanCheckTimer.unref) orphanCheckTimer.unref();
 
   function emitActivity(line: string): void {
     for (const cb of activityCallbacks) cb(line);
@@ -159,6 +180,7 @@ export function createClaudeManager(config: Config): LLMManager {
     accumulatedText = "";
     spawnedAt = Date.now();
     lastActivityAt = Date.now();
+    spawnedPids.add(proc.pid);
     startHealthCheck();
 
     console.log(`[claude] Spawned process (pid: ${proc.pid})`);

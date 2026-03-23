@@ -34,6 +34,7 @@ export function createGeminiManager(config: Config): LLMManager {
   let pendingRetry = false;
   let rateLimitDetected = false;
   let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  const spawnedPids = new Set<number>(); // track all PIDs we've ever spawned
 
   function startHealthCheck(): void {
     stopHealthCheck();
@@ -76,6 +77,25 @@ export function createGeminiManager(config: Config): LLMManager {
     }
   }
 
+  // Orphan checker: every 30s, verify no stale Gemini processes are alive
+  const orphanCheckTimer = setInterval(() => {
+    const currentPid = proc?.pid;
+    for (const pid of spawnedPids) {
+      if (pid === currentPid) continue;
+      try {
+        process.kill(pid, 0); // existence check — throws if dead
+        // Still alive — this is an orphan
+        console.error(`[gemini] ORPHAN DETECTED: pid ${pid} still alive (current: ${currentPid ?? "none"}) — killing`);
+        try { process.kill(pid, 9); } catch {}
+        spawnedPids.delete(pid);
+      } catch {
+        // Process is dead, clean it from the set
+        spawnedPids.delete(pid);
+      }
+    }
+  }, 30_000);
+  if (orphanCheckTimer.unref) orphanCheckTimer.unref();
+
   function emitActivity(line: string): void {
     for (const cb of activityCallbacks) cb(line);
   }
@@ -117,6 +137,7 @@ export function createGeminiManager(config: Config): LLMManager {
     accumulatedText = "";
     spawnedAt = Date.now();
     lastActivityAt = Date.now();
+    spawnedPids.add(proc.pid);
     startHealthCheck();
 
     console.log(`[gemini] Spawned process (pid: ${proc.pid})`);
