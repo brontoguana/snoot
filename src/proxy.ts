@@ -1,7 +1,7 @@
 import { join, resolve, extname, delimiter as PATH_DELIMITER } from "path";
 import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
 import { homedir } from "os";
-import type { Config, LLMManager, TransportClient, Backend, Mode, IncomingMessage, IncomingAttachment } from "./types.js";
+import type { Config, LLMManager, TransportClient, Backend, Mode, IncomingMessage, IncomingAttachment, EndpointConfig } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createMatrixClient } from "./matrix.js";
 import { createClaudeManager } from "./claude.js";
@@ -9,35 +9,18 @@ import { createGeminiManager } from "./gemini.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
 import { buildProfilePrompt, convertAvatarSvg, svgToPng, extractSvgBlocks, initResvg } from "./profile.js";
+import { findCliPath, loadEndpoints, endpointDisplayName } from "./utils.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
-function findCliPath(name: string): string | undefined {
-  const extensions = IS_WINDOWS ? [".cmd", ".bat", ".exe", ""] : [""];
-  const pathDirs = (process.env.PATH || "").split(PATH_DELIMITER);
-  const extraDirs: string[] = [];
-  if (IS_WINDOWS) {
-    const appData = process.env.APPDATA || resolve(homedir(), "AppData", "Roaming");
-    const localAppData = process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local");
-    extraDirs.push(
-      resolve(appData, "npm"),
-      resolve(localAppData, "Microsoft", "WinGet", "Links"),
-      resolve(localAppData, "Programs", "claude-code"),
-      resolve(homedir(), ".bun", "bin"),
-      resolve(homedir(), "scoop", "shims"),
-    );
-  }
-  for (const dir of [...pathDirs, ...extraDirs]) {
-    for (const ext of extensions) {
-      const candidate = resolve(dir, name + ext);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return undefined;
-}
-
 function createLLM(config: Config): LLMManager {
-  return config.backend === "gemini"
+  const ep = config.endpointConfig;
+  if (ep?.type === "openai") {
+    // Phase 2: return createOpenAIManager(config);
+    throw new Error(`OpenAI-compatible endpoints not yet implemented. Use a CLI endpoint.`);
+  }
+  const cli = ep?.cli || config.backend;
+  return cli === "gemini"
     ? createGeminiManager(config)
     : createClaudeManager(config);
 }
@@ -172,17 +155,26 @@ export function createProxy(config: Config) {
     });
   }
 
-  async function switchBackend(backend: Backend): Promise<string> {
-    if (config.backend === backend) {
-      return `Already using ${backend}.`;
+  async function switchEndpoint(name: string): Promise<string> {
+    const endpoints = loadEndpoints();
+    const ep = endpoints[name];
+    if (!ep) {
+      const available = Object.keys(endpoints);
+      return `Unknown endpoint "${name}". Available: ${available.join(", ") || "none"}`;
+    }
+    if (name === config.backend) {
+      return `Already using ${name}.`;
     }
     if (llm.isAlive()) await llm.kill();
-    config.backend = backend;
-    config.cliPath = findCliPath(backend === "gemini" ? "gemini" : "claude");
+    config.backend = name;
+    config.endpointConfig = ep;
+    if (ep.type === "cli") {
+      config.cliPath = findCliPath(ep.cli || name);
+    }
     llm = createLLM(config);
     wireLLMCallbacks();
     saveSettings();
-    return `Switched to ${backend}. Next message will use ${backend}.`;
+    return `Switched to ${name}. Next message will use ${name}.`;
   }
 
   const VALID_EFFORTS = ["low", "medium", "high", "max"];
@@ -204,8 +196,9 @@ export function createProxy(config: Config) {
       return;
     }
 
-    if (config.backend === "gemini") {
-      sessionClient.send("Effort is only supported for Claude.").catch(() => {});
+    const cli = config.endpointConfig?.cli || config.backend;
+    if (cli !== "claude") {
+      sessionClient.send("Effort is only supported for Claude CLI endpoints.").catch(() => {});
       return;
     }
 
@@ -310,7 +303,7 @@ export function createProxy(config: Config) {
     wireLLMCallbacks();
 
     await sessionClient.startListening(onMessage);
-    console.log(`[proxy] Ready. Transport: ${config.transport}, Mode: ${config.mode}, Backend: ${config.backend}`);
+    console.log(`[proxy] Ready. Transport: ${config.transport}, Mode: ${config.mode}, Endpoint: ${config.backend}`);
     watchLog(`🟢 Snoot online — ${config.transport} / ${config.backend} / ${config.mode} / ${config.workDir}`);
 
     // Wait for session to connect, then re-upload avatar before greeting
@@ -328,7 +321,7 @@ export function createProxy(config: Config) {
     console.log(`[proxy] Sending greeting...`);
     try {
       await sessionClient.send(
-        `✅ Snoot is online. Backend: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
+        `✅ Snoot is online. Endpoint: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
       );
       console.log(`[proxy] Greeting sent.`);
     } catch (err) {
@@ -336,9 +329,9 @@ export function createProxy(config: Config) {
     }
 
     // If the LLM CLI isn't found, offer to install it
-    if (!config.cliPath) {
-      const cliName = config.backend === "gemini" ? "gemini" : "claude";
-      const pkg = config.backend === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
+    if (!config.cliPath && config.endpointConfig?.type !== "openai") {
+      const cliName = config.endpointConfig?.cli || config.backend;
+      const pkg = cliName === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
       const installCmd = findInstallCommand(pkg);
       const installHint = installCmd ? `\n\nI'll run: ${installCmd.label}\n\nReply Y to install, or install it yourself and restart.` : `\n\nNo package manager found (npm, bun). Install one first.`;
       console.log(`[proxy] CLI "${cliName}" not found, offering install`);
@@ -391,8 +384,8 @@ export function createProxy(config: Config) {
   }
 
   async function installCli(): Promise<void> {
-    const cliName = config.backend === "gemini" ? "gemini" : "claude";
-    const pkg = config.backend === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
+    const cliName = config.endpointConfig?.cli || config.backend;
+    const pkg = cliName === "gemini" ? "@anthropic-ai/gemini-code" : "@anthropic-ai/claude-code";
     pendingCliInstall = false;
 
     const installCmd = findInstallCommand(pkg);
@@ -487,11 +480,33 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // /claude and /gemini — switch backend (bypass queue)
+    // /endpoint — switch or list endpoints (bypass queue)
+    const endpointMatch = trimmed.match(/^\/endpoint\s*(.*)/i);
+    if (endpointMatch !== null) {
+      const endpointArg = endpointMatch[1].trim();
+      if (!endpointArg) {
+        const endpoints = loadEndpoints();
+        const lines = Object.entries(endpoints).map(([name, ep]) => {
+          const active = name === config.backend ? " (active)" : "";
+          const desc = ep.type === "cli" ? `cli: ${ep.cli || name}` : `openai: ${ep.url}`;
+          return `  ${name} — ${desc}${active}`;
+        });
+        const epMsg = lines.length > 0
+          ? `Endpoints:\n${lines.join("\n")}`
+          : "No endpoints configured. Use 'snoot setup endpoint' to add.";
+        sessionClient.send(epMsg).catch(() => {});
+        return;
+      }
+      watchLog(`🔄 Switching to endpoint ${endpointArg}`);
+      switchEndpoint(endpointArg).then(msg => sessionClient.send(msg).catch(() => {}));
+      return;
+    }
+
+    // /claude and /gemini — shortcuts for /endpoint claude and /endpoint gemini
     if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini") {
-      const backend = trimmed.toLowerCase().slice(1) as Backend;
-      watchLog(`🔄 Switching to ${backend}`);
-      switchBackend(backend).then(msg => sessionClient.send(msg).catch(() => {}));
+      const name = trimmed.toLowerCase().slice(1);
+      watchLog(`🔄 Switching to ${name}`);
+      switchEndpoint(name).then(msg => sessionClient.send(msg).catch(() => {}));
       return;
     }
 
@@ -501,7 +516,8 @@ export function createProxy(config: Config) {
       const modelArg = modelMatch[1].trim();
       if (!modelArg) {
         const current = config.model || "default";
-        const options = config.backend === "gemini"
+        const activeCli = config.endpointConfig?.cli || config.backend;
+        const options = activeCli === "gemini"
           ? [
               `Current model: ${current}`,
               "",
@@ -512,7 +528,8 @@ export function createProxy(config: Config) {
               "  /model gemini-3.1-pro-preview",
               "  /model default",
             ]
-          : [
+          : activeCli === "claude"
+          ? [
               `Current model: ${current}`,
               "",
               "Options:",
@@ -520,6 +537,12 @@ export function createProxy(config: Config) {
               "  /model sonnet (claude-sonnet-4-6)",
               "  /model haiku (claude-haiku-4-5)",
               "  /model <full-model-id>",
+              "  /model default",
+            ]
+          : [
+              `Current model: ${current}`,
+              "",
+              "  /model <model-name>",
               "  /model default",
             ];
         sessionClient.send(options.join("\n")).catch(() => {});
@@ -823,7 +846,7 @@ export function createProxy(config: Config) {
     llm.send(text, promptFile);
 
     // Send "thinking" indicators
-    const backendName = config.backend === "gemini" ? "Gemini" : "Claude";
+    const backendName = endpointDisplayName(config.backend);
     const thinkingTimer = setTimeout(async () => {
       if (llm.isAlive()) {
         try { await sessionClient.send("💭 thinking..."); } catch {}

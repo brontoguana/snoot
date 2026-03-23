@@ -1,7 +1,15 @@
 // -- Configuration --
 
 export type Mode = "chat" | "research" | "coding";
-export type Backend = "claude" | "gemini";
+export type Backend = string; // endpoint name (e.g. "claude", "gemini", "local")
+
+export interface EndpointConfig {
+  type: "cli" | "openai";
+  cli?: string;      // for cli type: binary name ("claude" or "gemini")
+  url?: string;      // for openai type: API base URL
+  model?: string;    // for openai type: default model name
+  apiKey?: string;   // for openai type: API key
+}
 export type Transport = "session" | "matrix";
 
 export interface MatrixConfig {
@@ -23,6 +31,7 @@ export interface Config {
   contextBudget: number; // target context size in estimated tokens (default 100000)
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
+  endpointConfig?: EndpointConfig; // resolved endpoint config for current backend
   cliPath?: string; // resolved full path to CLI binary (claude/gemini)
   selfCommand: string[]; // command to re-exec this process (for /restart)
 }

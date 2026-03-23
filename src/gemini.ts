@@ -1,6 +1,27 @@
 import { readFileSync } from "fs";
+import path from "path";
 import type { Config, LLMManager } from "./types.js";
 import { createBaseLLMManager, type OutputEvent } from "./llm-base.js";
+
+function shortPath(p: string): string {
+  const dir = path.basename(path.dirname(p));
+  const file = path.basename(p);
+  return dir && dir !== "." ? `${dir}/${file}` : file;
+}
+
+function formatToolUse(name: string, input: any): string {
+  switch (name) {
+    case "read_file": return `Read ${input?.file_path ? shortPath(input.file_path) : ""}`;
+    case "replace": return `Edit ${input?.file_path ? shortPath(input.file_path) : ""}`;
+    case "write_file": return `Write ${input?.file_path ? shortPath(input.file_path) : ""}`;
+    case "run_shell_command": return `Bash: ${(input?.command || "").slice(0, 120)}`;
+    case "grep_search": return `Grep "${input?.pattern || ""}" in ${input?.dir_path ? shortPath(input.dir_path) : "."}`;
+    case "glob": return `Glob ${input?.pattern || ""}`;
+    case "google_web_search": return `WebSearch: ${(input?.query || "").slice(0, 100)}`;
+    case "web_fetch": return `WebFetch: ${(input?.url || "").slice(0, 100)}`;
+    default: return name;
+  }
+}
 
 export function createGeminiManager(config: Config): LLMManager {
   return createBaseLLMManager(config, {
@@ -26,15 +47,29 @@ export function createGeminiManager(config: Config): LLMManager {
       ];
 
       if (cfg.model) args.push("-m", cfg.model);
-      args.push("-p", fullPrompt);
+      // We pass an empty prompt via -p to force headless mode,
+      // then write the actual content to stdin.
+      args.push("-p", "");
 
-      return Bun.spawn(args, {
+      const proc = Bun.spawn(args, {
         cwd: cfg.workDir,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
         env: { ...process.env },
       });
+
+      // Write prompt to stdin, then close
+      try {
+        const stdin = proc.stdin as import("bun").FileSink;
+        stdin.write(fullPrompt);
+        stdin.end();
+      } catch (err) {
+        try { proc.kill("SIGKILL"); } catch {}
+        throw err;
+      }
+
+      return proc;
     },
 
     parseOutput(json): OutputEvent[] {
@@ -67,7 +102,7 @@ export function createGeminiManager(config: Config): LLMManager {
           events.push({ kind: "log", message: `Session initialized: model=${json.model}` });
           break;
         case "tool_use":
-          events.push({ kind: "tool_use", detail: String(json.tool_name || "unknown tool") });
+          events.push({ kind: "tool_use", detail: formatToolUse(json.tool_name, json.parameters) });
           break;
         case "tool_result":
           events.push({ kind: "log", message: `Tool result: ${json.tool_id} (${json.status})` });

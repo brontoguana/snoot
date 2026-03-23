@@ -229,6 +229,19 @@ For requests that take more than 30 seconds, Snoot streams partial responses bac
 - **API errors (500)**: Same auto-retry with backoff and notification.
 - **Empty responses**: Detects and reports when the AI returns nothing (usually a budget or rate limit issue).
 
+## Security Model
+
+Snoot runs Claude and Gemini with **full permissions** — no confirmation prompts, no sandboxing. This is a deliberate design choice: since you're on your phone, not at a terminal, there's no way to approve permission prompts interactively.
+
+This means **anyone who can send messages to your Snoot bot can execute arbitrary commands on your machine**. The trust boundary is your messenger transport:
+
+- **Session**: end-to-end encrypted, onion-routed. Only someone with your Session ID can message the bot, and only the configured user ID is accepted.
+- **Matrix**: end-to-end encrypted (if enabled). Only the configured user ID is accepted.
+
+**Keep your credentials safe.** If someone obtains your Session identity or Matrix access token, they can impersonate you to the bot and get shell access. Credential files (identity.json, config.json) are created with restricted permissions (owner-only read/write).
+
+The Gemini backend uses `--yolo` mode for the same reason — it cannot prompt for confirmation in a headless proxy.
+
 ## Building from Source
 
 If you want to modify Snoot or build from source:

@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, chmodSync } from "fs";
 import { resolve, dirname } from "path";
 import { homedir } from "os";
 import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
 import { VERSION } from "./version.js";
+import { endpointDisplayName } from "./utils.js";
 
 const VALID_MODES: Mode[] = ["chat", "research", "coding"];
 
@@ -30,8 +31,9 @@ export function handleCommand(
           "  /status — show current state",
           "  /context — show summary and pins",
           `  /mode <chat|research|coding> — switch mode (current: ${config.mode})`,
-          `  /claude — switch to Claude backend`,
-          `  /gemini — switch to Gemini backend`,
+          `  /endpoint [name] — switch endpoint or list available`,
+          `  /claude — shortcut for /endpoint claude`,
+          `  /gemini — shortcut for /endpoint gemini`,
           `  /model <name> — switch model (e.g. opus, sonnet, gemini-2.5-pro)`,
           `  /effort <level> — set effort (low/medium/high/max/default)`,
           "  /pin <text> — pin context that survives compaction",
@@ -55,7 +57,7 @@ export function handleCommand(
     case "/hi":
     case "/update": {
       const status = llm.getStatus();
-      const name = status.backend === "gemini" ? "Gemini" : "Claude";
+      const name = endpointDisplayName(config.backend);
       if (!status.alive) {
         return { response: `${name} is idle. Send a message to start a new request.` };
       }
@@ -80,11 +82,12 @@ export function handleCommand(
 
     case "/status": {
       const state = context.getState();
-      const statusName = config.backend === "gemini" ? "Gemini" : "Claude";
+      const statusName = endpointDisplayName(config.backend);
+      const epType = config.endpointConfig?.type === "openai" ? ` (openai: ${config.endpointConfig.url})` : "";
       return {
         response: [
           `Transport: ${config.transport}`,
-          `Backend: ${config.backend}`,
+          `Endpoint: ${config.backend}${epType}`,
           `Model: ${config.model || "default"}`,
           `Effort: ${config.effort !== undefined ? config.effort : "default"}`,
           `Mode: ${config.mode}`,
@@ -188,6 +191,7 @@ export function handleCommand(
         const identity = JSON.parse(readFileSync(identityFile, "utf-8"));
         identity.displayName = args;
         writeFileSync(identityFile, JSON.stringify(identity, null, 2));
+        try { chmodSync(identityFile, 0o600); } catch {}
       } catch (err) {
         return { response: `Failed to update identity: ${err instanceof Error ? err.message : String(err)}` };
       }

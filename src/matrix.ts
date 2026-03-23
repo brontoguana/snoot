@@ -1,5 +1,5 @@
 import * as sdk from "matrix-js-sdk";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
 import { basename, extname } from "path";
 import type { Config, TransportClient, IncomingAttachment, IncomingMessage } from "./types.js";
 
@@ -84,6 +84,7 @@ export async function createMatrixClient(config: Config): Promise<TransportClien
       homeserver: config.matrixConfig.homeserver,
     };
     writeFileSync(identityFile, JSON.stringify(identity, null, 2));
+    try { chmodSync(identityFile, 0o600); } catch {}
     console.log(`[matrix] Saved identity for ${identity.userId}`);
     tempClient.stopClient();
   }

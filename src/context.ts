@@ -3,7 +3,12 @@ import type { Config, ContextStore, ContextState, MessagePair, PinnedItem } from
 
 const ARCHIVE_RETENTION_DAYS = 30;
 
-const SYSTEM_PROMPT = `You are Claude, an AI assistant accessed via Session encrypted messenger. The user is chatting with you from their phone through a proxy called Snoot.
+function getSystemPrompt(backend: string): string {
+  let name: string;
+  if (backend === "gemini") name = "Gemini";
+  else if (backend === "claude") name = "Claude";
+  else name = backend.charAt(0).toUpperCase() + backend.slice(1);
+  return `You are ${name}, an AI assistant accessed via encrypted messenger. The user is chatting with you from their phone through a proxy called Snoot.
 
 Guidelines:
 - Be concise — the user is on a phone, so keep responses reasonably short unless asked for detail.
@@ -13,6 +18,7 @@ Guidelines:
 - If you don't know something from earlier conversation, just say so.
 - When you want to show a table, diagram, chart, or any structured visual, embed an inline SVG directly in your response. The proxy will convert it to a PNG image and send it to the user. Use <svg xmlns="http://www.w3.org/2000/svg" ...>...</svg> with a self-contained design (no external fonts/images). Keep SVGs simple and readable at phone screen size. Use this for tables, comparisons, architecture diagrams, flowcharts, or anything that benefits from visual layout. Put any surrounding explanation as plain text before or after the SVG block.
 - To send a file or image from the project to the user, use <attach>relative/path/to/file</attach>. The proxy will read the file and send it as an attachment. Paths must be relative to the working directory. Use this for screenshots, generated images, documents, or any file the user asks to see.`;
+}
 
 export function createContextStore(config: Config): ContextStore {
   const contextDir = `${config.baseDir}/context`;
@@ -107,7 +113,7 @@ export function createContextStore(config: Config): ContextStore {
 
   function buildPrompt(): string {
     const promptPath = `${contextDir}/prompt.txt`;
-    const parts: string[] = [SYSTEM_PROMPT];
+    const parts: string[] = [getSystemPrompt(config.backend)];
 
     // Per-instance prompt file: <channel>.snoot.md in working directory
     const instancePromptPath = `${config.workDir}/${config.channel}.snoot.md`;
@@ -258,17 +264,18 @@ ${input}`;
     const env = { ...process.env };
     delete env.CLAUDECODE;
 
+    const args = config.backend === "gemini"
+      ? [config.cliPath || "gemini", "-p", ""]
+      : [config.cliPath || "claude", "-p", "--model", "sonnet", "--no-session-persistence"];
+
     let proc;
     try {
-      proc = Bun.spawn(
-        ["claude", "-p", "--model", "sonnet", "--no-session-persistence"],
-        {
-          stdin: "pipe",
-          stdout: "pipe",
-          stderr: "pipe",
-          env,
-        }
-      );
+      proc = Bun.spawn(args, {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      });
     } catch (err) {
       console.error("[context] Failed to spawn compaction process:", err);
       throw err;

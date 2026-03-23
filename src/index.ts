@@ -4,8 +4,9 @@ import "@session.js/bun-network";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, openSync, appendFileSync, chmodSync, watch as fsWatchFile } from "fs";
 import { resolve, dirname, basename, parse as parsePath, delimiter as PATH_DELIMITER } from "path";
 import { homedir } from "os";
-import type { Config, Mode, Backend, Transport, MatrixConfig } from "./types.js";
+import type { Config, Mode, Backend, Transport, MatrixConfig, EndpointConfig } from "./types.js";
 import { createProxy } from "./proxy.js";
+import { findCliPath, loadEndpoints } from "./utils.js";
 
 const SNOOT_SRC = import.meta.filename;
 const GLOBAL_SNOOT_DIR = resolve(homedir(), ".snoot");
@@ -47,36 +48,6 @@ for (const dir of EXTRA_PATH_DIRS) {
   }
 }
 const INSTANCES_DIR = resolve(GLOBAL_SNOOT_DIR, "instances");
-
-// Find the full path to a CLI tool (claude or gemini).
-// On Windows, Bun.spawn doesn't resolve .cmd/.bat extensions, so we search explicitly.
-function findCliPath(name: string): string | undefined {
-  const extensions = IS_WINDOWS ? [".cmd", ".bat", ".exe", ""] : [""];
-  const pathDirs = (process.env.PATH || "").split(PATH_DELIMITER);
-
-  // Also search common install locations not always in PATH
-  const extraDirs: string[] = [];
-  if (IS_WINDOWS) {
-    const appData = process.env.APPDATA || resolve(homedir(), "AppData", "Roaming");
-    const localAppData = process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local");
-    extraDirs.push(
-      resolve(appData, "npm"),
-      resolve(localAppData, "Microsoft", "WinGet", "Links"),
-      resolve(localAppData, "Programs", "claude-code"),  // MSI installer
-      resolve(homedir(), ".bun", "bin"),
-      resolve(homedir(), "scoop", "shims"),              // scoop
-    );
-  }
-
-  const allDirs = [...pathDirs, ...extraDirs];
-  for (const dir of allDirs) {
-    for (const ext of extensions) {
-      const candidate = resolve(dir, name + ext);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return undefined;
-}
 
 // Build a command to spawn ourselves.
 // In compiled mode, process.execPath IS the binary — no script arg needed.
@@ -227,6 +198,8 @@ interface GlobalConfig {
   matrixAccessToken?: string;
   matrixDeviceId?: string;
   budgetUsd?: number;
+  contextBudget?: number;
+  endpoints?: Record<string, EndpointConfig>;
 }
 
 function loadGlobalConfig(): GlobalConfig | null {
@@ -252,13 +225,107 @@ function detectTransport(userId: string): Transport {
   return "session";
 }
 
-async function handleSetup(args: string[]): Promise<never> {
-  const transport = args[0]?.toLowerCase() as Transport | undefined;
+function handleSetupEndpoint(args: string[]): never {
+  // --list or no args: show configured endpoints
+  if (args.length === 0 || args[0] === "--list") {
+    const endpoints = loadEndpoints();
+    const entries = Object.entries(endpoints);
+    if (entries.length === 0) {
+      console.log("No endpoints configured.");
+    } else {
+      console.log("Configured endpoints:");
+      for (const [name, ep] of entries) {
+        if (ep.type === "cli") {
+          const path = findCliPath(ep.cli || name);
+          console.log(`  ${name}  (cli: ${ep.cli || name})  ${path ? "found" : "NOT found on PATH"}`);
+        } else {
+          console.log(`  ${name}  (openai: ${ep.url})  model: ${ep.model || "default"}`);
+        }
+      }
+    }
+    process.exit(0);
+  }
 
-  if (!transport || !["session", "matrix"].includes(transport)) {
+  // --remove <name>
+  if (args[0] === "--remove") {
+    const name = args[1];
+    if (!name) {
+      console.error("Usage: snoot setup endpoint --remove <name>");
+      process.exit(1);
+    }
+    const config = loadGlobalConfig() || {} as GlobalConfig;
+    if (!config.endpoints?.[name]) {
+      console.log(`No endpoint "${name}" found.`);
+      process.exit(1);
+    }
+    delete config.endpoints[name];
+    saveGlobalConfig(config);
+    console.log(`Removed endpoint "${name}".`);
+    process.exit(0);
+  }
+
+  // Add/update endpoint: snoot setup endpoint <name> [options]
+  const name = args[0];
+  if (name.startsWith("-")) {
+    console.error("Usage: snoot setup endpoint <name> [--url <url>] [--model <model>] [--api-key <key>]");
+    process.exit(1);
+  }
+
+  let url = "";
+  let model = "";
+  let apiKey = "";
+  let cli = "";
+
+  for (let i = 1; i < args.length; i++) {
+    switch (args[i]) {
+      case "--url": url = args[++i] || ""; break;
+      case "--model": case "-m": model = args[++i] || ""; break;
+      case "--api-key": case "--key": apiKey = args[++i] || ""; break;
+      case "--cli": cli = args[++i] || ""; break;
+      default:
+        console.error(`Unknown option: ${args[i]}`);
+        process.exit(1);
+    }
+  }
+
+  const endpoint: EndpointConfig = url
+    ? { type: "openai", url, model: model || undefined, apiKey: apiKey || undefined }
+    : { type: "cli", cli: cli || name };
+
+  const config = loadGlobalConfig() || {} as GlobalConfig;
+  if (!config.endpoints) config.endpoints = {};
+  config.endpoints[name] = endpoint;
+  saveGlobalConfig(config);
+
+  if (endpoint.type === "cli") {
+    const path = findCliPath(endpoint.cli!);
+    console.log(`Endpoint "${name}" configured (CLI: ${endpoint.cli})`);
+    if (path) {
+      console.log(`  Binary found at: ${path}`);
+    } else {
+      console.log(`  Warning: "${endpoint.cli}" not found on PATH.`);
+    }
+  } else {
+    console.log(`Endpoint "${name}" configured (OpenAI-compatible)`);
+    console.log(`  URL: ${endpoint.url}`);
+    if (endpoint.model) console.log(`  Model: ${endpoint.model}`);
+    if (endpoint.apiKey) console.log(`  API key: ${endpoint.apiKey.slice(0, 8)}...`);
+    console.log(`\nNote: OpenAI-compatible endpoints are not yet supported at runtime. Coming soon.`);
+  }
+
+  process.exit(0);
+}
+
+async function handleSetup(args: string[]): Promise<never> {
+  const subcommand = args[0]?.toLowerCase();
+
+  if (!subcommand || !["session", "matrix", "endpoint"].includes(subcommand)) {
     console.log(`Usage:
   snoot setup session <session-id>
   snoot setup matrix <@user:server> [--homeserver <url>] [--token <access-token>]
+  snoot setup endpoint <name> [--url <url>] [--model <model>] [--api-key <key>]
+  snoot setup endpoint --list
+  snoot setup endpoint --remove <name>
 
 Current config:`);
     const cfg = loadGlobalConfig();
@@ -269,8 +336,19 @@ Current config:`);
     } else {
       console.log("  (not configured)");
     }
+    const endpoints = loadEndpoints();
+    const epNames = Object.keys(endpoints);
+    if (epNames.length > 0) {
+      console.log(`  Endpoints: ${epNames.join(", ")}`);
+    }
     process.exit(0);
   }
+
+  if (subcommand === "endpoint") {
+    handleSetupEndpoint(args.slice(1));
+  }
+
+  const transport = subcommand as Transport;
 
   if (transport === "session") {
     const sessionId = args[1];
@@ -830,6 +908,7 @@ async function parseArgs(): Promise<Config & { foreground: boolean }> {
     console.log(`Usage: snoot <channel> [options]
        snoot setup session <session-id>
        snoot setup matrix <@user:server> [--homeserver <url>] [--token <token>]
+       snoot setup endpoint <name> [--url <url>] [--model <model>] [--api-key <key>]
        snoot shutdown [channel]
        snoot restart [channel]
        snoot watch <channel>
@@ -840,7 +919,8 @@ async function parseArgs(): Promise<Config & { foreground: boolean }> {
 Options:
   --user <id>           User ID (overrides saved — Session hex or Matrix @user:server)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
-  --backend <backend>   LLM backend: claude, gemini (default: claude)
+  --backend <endpoint>  LLM endpoint to use (default: claude)
+  --endpoint <endpoint> Same as --backend
   --budget <usd>        Max budget per message in USD (no limit by default)
   --context-budget <n>  Context budget in tokens (default: 100000)
   --fg                  Run in foreground instead of daemonizing
@@ -849,6 +929,9 @@ Commands:
   setup session <id>    Configure Session transport with your Session ID.
   setup matrix <user>   Configure Matrix transport. Use --homeserver and --token,
                         or omit --token to login with password interactively.
+  setup endpoint <name> Configure an LLM endpoint. CLI auto-detected for "claude"
+                        and "gemini". Use --url for OpenAI-compatible APIs.
+  setup endpoint --list List all configured endpoints.
   shutdown [channel]    Stop running instance(s). Omit channel to stop all.
   restart [channel]     Restart instance(s) with saved args. Omit channel to restart all.
   watch <channel>       Watch live activity (tool use, spawns, responses) in real time.
@@ -916,11 +999,8 @@ Commands:
         }
         break;
       case "--backend":
-        backend = (args[++i] ?? "claude") as Backend;
-        if (!["claude", "gemini"].includes(backend)) {
-          console.error(`Invalid backend: ${backend}. Choose: claude, gemini`);
-          process.exit(1);
-        }
+      case "--endpoint":
+        backend = args[++i] ?? "claude";
         backendFromCli = true;
         break;
       case "--budget":
@@ -991,7 +1071,7 @@ Commands:
   if (existsSync(settingsPath)) {
     try {
       const saved = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      if (!backendFromCli && saved.backend && ["claude", "gemini"].includes(saved.backend)) {
+      if (!backendFromCli && saved.backend) {
         backend = saved.backend;
       }
       if (saved.model) savedModel = saved.model;
@@ -1004,9 +1084,32 @@ Commands:
     budgetUsd = globalConfig.budgetUsd;
   }
 
-  // Resolve CLI binary path
-  const cliName = backend === "gemini" ? "gemini" : "claude";
-  const cliPath = findCliPath(cliName);
+  // Resolve context budget: --context-budget flag > global config > default
+  const contextBudgetFromCli = args.some((a, i) => a === "--context-budget" && args[i + 1]);
+  if (!contextBudgetFromCli && globalConfig?.contextBudget !== undefined) {
+    contextBudget = globalConfig.contextBudget;
+  }
+
+  // Resolve endpoint config
+  const endpoints = loadEndpoints();
+  const endpointConfig = endpoints[backend];
+  if (!endpointConfig) {
+    const available = Object.keys(endpoints);
+    if (available.length > 0) {
+      console.error(`Unknown endpoint: "${backend}". Available: ${available.join(", ")}`);
+    } else {
+      console.error(`Unknown endpoint: "${backend}". No endpoints configured.`);
+    }
+    console.error(`Use 'snoot setup endpoint <name>' to configure a new endpoint.`);
+    process.exit(1);
+  }
+
+  // Resolve CLI binary path for CLI endpoints
+  let cliPath: string | undefined;
+  if (endpointConfig.type === "cli") {
+    const cliName = endpointConfig.cli || backend;
+    cliPath = findCliPath(cliName);
+  }
 
   return {
     channel,
@@ -1015,6 +1118,7 @@ Commands:
     matrixConfig,
     mode,
     backend,
+    endpointConfig,
     model: savedModel,
     effort: savedEffort,
     budgetUsd,
