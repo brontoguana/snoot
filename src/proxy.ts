@@ -263,7 +263,22 @@ export function createProxy(config: Config) {
     await Bun.write(btwPromptFile, btwPrompt);
 
     btwLlm.send(question, btwPromptFile);
-    const response = await btwLlm.waitForResponse();
+
+    const BTW_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+    let timedOut = false;
+    const timeout = new Promise<string | null>((resolve) =>
+      setTimeout(() => { timedOut = true; resolve(null); }, BTW_TIMEOUT)
+    );
+    const response = await Promise.race([btwLlm.waitForResponse(), timeout]);
+
+    if (timedOut) {
+      watchLog("⚠️ /btw timed out after 10 minutes, killing process");
+      btwLlm.forceKill();
+      try {
+        await sessionClient.send("/btw timed out after 10 minutes.");
+      } catch {}
+      return;
+    }
 
     if (response) {
       watchLog(`💬 /btw response (${response.length} chars)`);
