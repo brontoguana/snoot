@@ -1,7 +1,68 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync } from "fs";
+import { join, relative, basename } from "path";
 import type { Config, ContextStore, ContextState, MessagePair, PinnedItem, RecentCommand } from "./types.js";
 
 const ARCHIVE_RETENTION_DAYS = 30;
+
+/** Run a git command in a directory, return trimmed stdout or null on failure */
+function gitCmd(dir: string, ...args: string[]): string | null {
+  try {
+    const result = Bun.spawnSync(["git", "-C", dir, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) return null;
+    return result.stdout.toString().trim();
+  } catch {
+    return null;
+  }
+}
+
+interface RepoInfo {
+  path: string;      // display path (relative to workDir or absolute)
+  branch: string;
+  status: string[];  // porcelain status lines
+  commits: string[]; // last 2-3 oneline commits
+}
+
+/** Detect git repos: workDir itself + immediate subdirectories */
+function detectGitRepos(workDir: string): RepoInfo[] {
+  const repos: RepoInfo[] = [];
+
+  function probeRepo(dir: string): RepoInfo | null {
+    if (!existsSync(join(dir, ".git"))) return null;
+    const branch = gitCmd(dir, "branch", "--show-current") || gitCmd(dir, "rev-parse", "--short", "HEAD") || "unknown";
+    const statusRaw = gitCmd(dir, "status", "--porcelain") || "";
+    const status = statusRaw ? statusRaw.split("\n").slice(0, 8) : [];
+    const logRaw = gitCmd(dir, "log", "--oneline", "-3") || "";
+    const commits = logRaw ? logRaw.split("\n") : [];
+    const displayPath = dir === workDir ? basename(dir) + "/" : relative(workDir, dir) + "/";
+    return { path: displayPath, branch, status, commits };
+  }
+
+  // Check workDir itself
+  const root = probeRepo(workDir);
+  if (root) {
+    repos.push(root);
+    return repos; // workDir is a repo — don't recurse into subdirs
+  }
+
+  // workDir is not a repo — check immediate subdirectories
+  try {
+    const entries = readdirSync(workDir);
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const subdir = join(workDir, entry);
+      try {
+        if (!statSync(subdir).isDirectory()) continue;
+      } catch { continue; }
+      const repo = probeRepo(subdir);
+      if (repo) repos.push(repo);
+    }
+  } catch { /* workDir not readable */ }
+
+  return repos;
+}
 
 /** Regex to match tool-use traces in assistant responses: [Read ...], [Bash: ...], etc. */
 const TRACE_PATTERN = /\[(Read|Edit|Write|Patch|Bash|Grep|Glob|ListDir|WebFetch|WebSearch|Think|image|attachment)[^\]]*\]/g;
@@ -165,6 +226,27 @@ export function createContextStore(config: Config): ContextStore {
     const timeStr = nowDate.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
     parts.push(`\n\nCurrent date and time: ${dateStr} at ${timeStr} UTC`);
 
+    // Git repository info
+    const repos = detectGitRepos(config.workDir);
+    if (repos.length > 0) {
+      parts.push("\n\n## Git Repositories\n");
+      for (const repo of repos) {
+        parts.push(`${repo.path} (branch: ${repo.branch})`);
+        if (repo.status.length > 0) {
+          parts.push("  Status:");
+          for (const line of repo.status) parts.push(`    ${line}`);
+          if (repo.status.length === 8) parts.push("    ...");
+        } else {
+          parts.push("  Clean working tree");
+        }
+        if (repo.commits.length > 0) {
+          parts.push("  Recent commits:");
+          for (const c of repo.commits) parts.push(`    ${c}`);
+        }
+        parts.push("");
+      }
+    }
+
     // Per-instance prompt file: <channel>.snoot.md in working directory
     const instancePromptPath = `${config.workDir}/${config.channel}.snoot.md`;
     if (existsSync(instancePromptPath)) {
@@ -232,9 +314,9 @@ export function createContextStore(config: Config): ContextStore {
     return unpinned.length > config.windowSize + 10;
   }
 
-  async function compact(aggressive?: boolean): Promise<void> {
+  async function compact(aggressive?: boolean): Promise<{ compacted: number; remaining: number } | null> {
     const unpinned = recent.filter((p) => !p.pinned);
-    if (unpinned.length <= 1) return;
+    if (unpinned.length <= 1) return null;
 
     let compactCount: number;
     if (aggressive) {
@@ -244,7 +326,7 @@ export function createContextStore(config: Config): ContextStore {
     } else {
       // Auto-compact: trim back to windowSize
       const excess = unpinned.length - config.windowSize;
-      if (excess <= 0) return;
+      if (excess <= 0) return null;
       compactCount = excess;
     }
 
@@ -271,8 +353,10 @@ export function createContextStore(config: Config): ContextStore {
       saveState();
 
       console.log(`[context] Compaction complete. ${recent.length} pairs remaining`);
+      return { compacted: toCompact.length, remaining: recent.length };
     } catch (err) {
       console.error("[context] Compaction failed:", err);
+      return null;
     }
   }
 
@@ -348,23 +432,24 @@ export function createContextStore(config: Config): ContextStore {
   }
 
   async function runCompaction(input: string): Promise<string> {
-    const prompt = `Summarize this conversation history into a concise rolling summary. The conversation includes both text responses and tool-use traces (file reads, edits, bash commands, searches shown in [brackets]).
+    const prompt = `You are compacting conversation history for an LLM that will continue this work in a future session. The LLM cannot see these messages — only your summary. Write high-signal notes that help it pick up where things left off.
 
-Preserve:
-- All file paths read, edited, or created — and what was done to them
-- Code changes: what was modified, added, or removed and why
-- Bash commands run and their outcomes (especially errors)
-- Decisions made and their reasoning
-- Key technical facts, requirements, and constraints
-- Any tasks in progress or planned
+Write ONLY what a new session needs to know:
+- Decisions made and WHY (the reasoning matters more than the action)
+- What changed: "refactored compaction from token-based to message-count" not "edited context.ts lines 200-350"
+- Bugs found, root causes identified, fixes applied
+- Requirements or constraints the user stated
+- Work in progress or explicitly planned next steps
+- Anything surprising or non-obvious that was discovered
 
-Discard:
-- Pleasantries and small talk
-- Redundant explanations
-- Full file contents (summarize what was found instead)
-- Rejected alternatives (unless the rejection reason is important)
+Do NOT include:
+- Small talk, greetings, acknowledgments
+- Step-by-step narration of tool use ("read file X, then edited Y")
+- File contents or code snippets (the LLM can re-read files)
+- Things that are obvious from reading the current code
+- Alternatives that were discussed then rejected (unless the rejection reason is important)
 
-If there is a current summary, integrate the new messages into it rather than starting fresh.
+Keep it concise. A few dense paragraphs are better than an exhaustive log. If there is a current summary, integrate the new messages into it — update or replace outdated information rather than appending.
 
 ${input}`;
 

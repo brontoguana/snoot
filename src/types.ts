@@ -176,7 +176,7 @@ export interface ContextStore {
   append(pair: MessagePair): Promise<void>;
   buildPrompt(): string;
   needsCompaction(): boolean;
-  compact(aggressive?: boolean): Promise<void>;
+  compact(aggressive?: boolean): Promise<{ compacted: number; remaining: number } | null>;
   trackToolUse(detail: string): void;
   addPin(text: string): Promise<PinnedItem>;
   removePin(id: number): PinnedItem | null;

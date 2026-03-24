@@ -793,7 +793,15 @@ export function createProxy(config: Config) {
       }
       if (cmdResult.triggerCompaction) {
         watchLog(`📦 Compacting context (aggressive)`);
-        await context.compact(true);
+        // Send immediate feedback before compaction starts
+        try { await sessionClient.send("📦 Compacting context..."); } catch {}
+        const result = await context.compact(true);
+        if (result) {
+          try { await sessionClient.send(`Compact done. Summarized ${result.compacted} messages, ${result.remaining} remaining.`); } catch {}
+        } else {
+          try { await sessionClient.send("Nothing to compact."); } catch {}
+        }
+        return true; // Skip the default response send
       }
       if (cmdResult.saveWindow) {
         saveSettings();
