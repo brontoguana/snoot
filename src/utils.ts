@@ -52,6 +52,9 @@ export function loadEndpoints(): Record<string, EndpointConfig> {
   if (!endpoints.gemini && findCliPath("gemini")) {
     endpoints.gemini = { type: "cli", cli: "gemini" };
   }
+  if (!endpoints.codex && findCliPath("codex")) {
+    endpoints.codex = { type: "cli", cli: "codex" };
+  }
   return endpoints;
 }
 
@@ -84,5 +87,6 @@ export function removeEndpoint(name: string): boolean {
 export function endpointDisplayName(backend: string): string {
   if (backend === "gemini") return "Gemini";
   if (backend === "claude") return "Claude";
+  if (backend === "codex") return "Codex";
   return backend.charAt(0).toUpperCase() + backend.slice(1);
 }

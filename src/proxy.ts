@@ -6,6 +6,7 @@ import { createSessionClient } from "./session.js";
 import { createMatrixClient } from "./matrix.js";
 import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
+import { createCodexManager } from "./codex.js";
 import { createOpenAIManager } from "./openai.js";
 import { createContextStore } from "./context.js";
 import { handleCommand } from "./commands.js";
@@ -18,6 +19,7 @@ function backendEmoji(backend: string, ep?: EndpointConfig): string {
   const cli = ep?.cli || backend;
   if (cli === "claude" || backend === "claude") return "⚡";
   if (cli === "gemini" || backend === "gemini") return "💎";
+  if (cli === "codex" || backend === "codex") return "🧬";
   return "🌀";
 }
 
@@ -35,9 +37,9 @@ function createLLM(config: Config): LLMManager {
     return createOpenAIManager(config);
   }
   const cli = ep?.cli || config.backend;
-  return cli === "gemini"
-    ? createGeminiManager(config)
-    : createClaudeManager(config);
+  if (cli === "gemini") return createGeminiManager(config);
+  if (cli === "codex") return createCodexManager(config);
+  return createClaudeManager(config);
 }
 
 export function createProxy(config: Config) {
@@ -584,8 +586,8 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // /claude and /gemini — shortcuts for /endpoint claude and /endpoint gemini
-    if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini") {
+    // /claude, /gemini, /codex — shortcuts for /endpoint <name>
+    if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini" || trimmed.toLowerCase() === "/codex") {
       const name = trimmed.toLowerCase().slice(1);
       watchLog(`🔄 Switching to ${name}`);
       switchEndpoint(name).then(msg => sessionClient.send(msg).catch(() => {}));
