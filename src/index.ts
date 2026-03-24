@@ -1075,6 +1075,10 @@ Commands:
       }
       if (saved.model) savedModel = saved.model;
       if (saved.effort) savedEffort = saved.effort;
+      if (saved.contextBudget !== undefined) {
+        const parsed = parseInt(String(saved.contextBudget), 10);
+        if (!isNaN(parsed) && parsed >= 5000) contextBudget = parsed;
+      }
     } catch {}
   }
 
@@ -1083,9 +1087,11 @@ Commands:
     budgetUsd = globalConfig.budgetUsd;
   }
 
-  // Resolve context budget: --context-budget flag > global config > default
+  // Resolve context budget: --context-budget flag > settings.json > global config > default
+  // settings.json was loaded above and may have already set contextBudget
   const contextBudgetFromCli = args.some((a, i) => a === "--context-budget" && args[i + 1]);
-  if (!contextBudgetFromCli && globalConfig?.contextBudget !== undefined) {
+  if (!contextBudgetFromCli && contextBudget === 50_000 && globalConfig?.contextBudget !== undefined) {
+    // Only apply global config if neither CLI flag nor settings.json set it
     contextBudget = globalConfig.contextBudget;
   }
 
@@ -1331,7 +1337,7 @@ async function main(): Promise<void> {
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
-  console.log(`  Context budget: ${config.contextBudget} tokens`);
+  console.log(`  Context window: ${config.contextBudget} tokens (history: ${Math.floor(config.contextBudget * 0.7)})`);
 
   console.log(`  CLI path: ${config.cliPath || "(not found)"}`);
   if (!config.cliPath) {

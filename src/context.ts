@@ -168,15 +168,15 @@ export function createContextStore(config: Config): ContextStore {
     return estimateTokens(chars);
   }
 
-  /** History budget is half the total context budget — leaves the other half for
+  /** History budget is 70% of the total context budget — leaves 30% for
    *  system prompt, tool definitions, CLAUDE.md files, and the LLM's own working space. */
   function historyBudget(): number {
-    return Math.floor(config.contextBudget / 2);
+    return Math.floor(config.contextBudget * 0.7);
   }
 
   function needsCompaction(): boolean {
-    // Compact when conversation history exceeds 125% of the history budget
-    const threshold = historyBudget() * 1.25;
+    // Compact when conversation history exceeds 115% of the history budget
+    const threshold = historyBudget() * 1.15;
     return currentContextTokens() > threshold;
   }
 
@@ -210,7 +210,7 @@ export function createContextStore(config: Config): ContextStore {
     // Build compaction prompt
     const compactionInput = formatForCompaction(toCompact, summary);
 
-    console.log(`[context] Compacting ${toCompact.length} pairs (~${accumulated} tokens excess of ${hBudget} history budget, ${config.contextBudget} total budget)...`);
+    console.log(`[context] Compacting ${toCompact.length} pairs (~${accumulated} tokens excess of ${hBudget} history target, ${config.contextBudget} window)...`);
 
     try {
       const newSummary = await runCompaction(compactionInput);
@@ -307,12 +307,12 @@ ${input}`;
     return pin;
   }
 
-  async function removePin(id: number): Promise<boolean> {
+  function removePin(id: number): PinnedItem | null {
     const idx = state.pins.findIndex((p) => p.id === id);
-    if (idx === -1) return false;
-    state.pins.splice(idx, 1);
+    if (idx === -1) return null;
+    const [removed] = state.pins.splice(idx, 1);
     saveState();
-    return true;
+    return removed;
   }
 
   function getState(): ContextState {

@@ -36,6 +36,7 @@ export function handleCommand(
           `  /gemini — shortcut for /endpoint gemini`,
           `  /model <name> — switch model (e.g. opus, sonnet, gemini-2.5-pro)`,
           `  /effort <level> — set effort (low/medium/high/max/default)`,
+          `  /window <tokens> — set context window size (history=70%, compact at +15%)`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate avatar from description",
@@ -109,7 +110,7 @@ export function handleCommand(
           `${statusName}: ${llm.isAlive() ? "processing" : "idle"}`,
           `Messages: ${state.totalPairs} total, ${context.getRecent().length} in window`,
           `Pins: ${state.pins.length}`,
-          `Context budget: ${config.contextBudget} tokens (history target: ${Math.floor(config.contextBudget / 2)})`,
+          `Context window: ${config.contextBudget} tokens (history: ${Math.floor(config.contextBudget * 0.7)}, compact at +15%)`,
         ].join("\n"),
       };
     }
@@ -157,16 +158,42 @@ export function handleCommand(
       };
     }
 
+    case "/window": {
+      if (!args) {
+        const historyTarget = Math.floor(config.contextBudget * 0.7);
+        const compactAt = Math.floor(historyTarget * 1.15);
+        return {
+          response: `Context window: ${config.contextBudget} tokens\nHistory target: ${historyTarget} tokens (70%)\nCompaction at: ${compactAt} tokens (+15%)\n\nUsage: /window <tokens> (e.g. /window 50000)`,
+        };
+      }
+      const n = parseInt(args, 10);
+      if (isNaN(n) || n < 5000) {
+        return { response: "Window size must be a number >= 5000." };
+      }
+      config.contextBudget = n;
+      const historyTarget = Math.floor(n * 0.7);
+      const compactAt = Math.floor(historyTarget * 1.15);
+      return {
+        response: `Context window set to ${n} tokens.\nHistory target: ${historyTarget} (70%)\nCompaction at: ${compactAt} (+15%)`,
+        killProcess: true,
+        saveWindow: true,
+      };
+    }
+
     case "/pin": {
       if (!args) {
         return { response: "Usage: /pin <text to pin>" };
       }
-      // addPin is async but we return synchronously — caller handles the promise
-      const pin = context.addPin(args);
-      // Since addPin returns a promise, we need to handle it
-      return {
-        response: `Pinned. Use /context to see all pins, /unpin <id> to remove.`,
-      };
+      const pinText = `IMPORTANT: ${args}`;
+      // addPin updates state synchronously before returning the promise
+      context.addPin(pinText);
+      const allPins = context.getState().pins;
+      const lines = ["Pinned.", ""];
+      for (const p of allPins) {
+        lines.push(`  #${p.id}: ${p.text}`);
+      }
+      lines.push("", "Use /unpin <id> to remove.");
+      return { response: lines.join("\n") };
     }
 
     case "/unpin": {
@@ -174,10 +201,13 @@ export function handleCommand(
       if (isNaN(id)) {
         return { response: "Usage: /unpin <id>" };
       }
-      // removePin is async but we return synchronously
       const removed = context.removePin(id);
+      if (!removed) {
+        return { response: `Pin #${id} not found. Use /context to see current pins.` };
+      }
+      const preview = removed.text.length > 80 ? removed.text.slice(0, 80) + "..." : removed.text;
       return {
-        response: `Pin #${id} removed (if it existed). Use /context to see remaining pins.`,
+        response: `Removed pin #${id}: ${preview}`,
       };
     }
 

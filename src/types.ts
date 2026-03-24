@@ -28,7 +28,7 @@ export interface Config {
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
   effort?: string; // effort level: "low", "medium", "high", "max" (Claude only)
   budgetUsd?: number; // undefined = no budget limit
-  contextBudget: number; // total context budget in estimated tokens (default 50000; history target is half)
+  contextBudget: number; // total context budget in estimated tokens (default 50000; history=70%, compact at +15%)
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
   endpointConfig?: EndpointConfig; // resolved endpoint config for current backend
@@ -153,6 +153,7 @@ export interface CommandResult {
   triggerCompaction?: boolean;
   restartProcess?: boolean;
   moveChannel?: string; // new channel name for /move — proxy handles restart with new name
+  saveWindow?: boolean; // persist contextBudget to settings
 }
 
 // -- Context Store --
@@ -164,7 +165,7 @@ export interface ContextStore {
   needsCompaction(): boolean;
   compact(): Promise<void>;
   addPin(text: string): Promise<PinnedItem>;
-  removePin(id: number): Promise<boolean>;
+  removePin(id: number): PinnedItem | null;
   getState(): ContextState;
   getRecent(): MessagePair[];
   getSummary(): string;
