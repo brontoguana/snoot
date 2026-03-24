@@ -257,7 +257,8 @@ export function createContextStore(config: Config): ContextStore {
     if (state.pins.length > 0) {
       parts.push("\n\n## Pinned Context\n");
       for (const pin of state.pins) {
-        parts.push(`- [pin #${pin.id}] ${pin.text}`);
+        const text = /^important:\s/i.test(pin.text) ? pin.text : `IMPORTANT: ${pin.text}`;
+        parts.push(`- [pin #${pin.id}] ${text}`);
       }
     }
 
@@ -292,12 +293,15 @@ export function createContextStore(config: Config): ContextStore {
       for (const pair of recent) {
         const pinMarker = pair.pinned ? " [pinned]" : "";
         const age = timeAgo(pair.timestamp, now);
-        parts.push(`User${pinMarker} ${age}: ${pair.user}`);
+        parts.push(`─── User${pinMarker} (${age.replace(/[()]/g, "")}) ───`);
+        parts.push(pair.user);
+        parts.push("");
         let assistantText = stripTraces(pair.assistant);
         if (assistantText.length > MAX_ENTRY_CHARS) {
           assistantText = assistantText.slice(0, MAX_ENTRY_CHARS) + "...";
         }
-        parts.push(`Assistant: ${assistantText}`);
+        parts.push(`─── You (${age.replace(/[()]/g, "")}) ───`);
+        parts.push(assistantText);
         parts.push("");
       }
     }
