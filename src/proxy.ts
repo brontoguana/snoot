@@ -1,5 +1,5 @@
 import { join, resolve, extname, delimiter as PATH_DELIMITER } from "path";
-import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch } from "fs";
+import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch, mkdirSync, renameSync, cpSync } from "fs";
 import { homedir } from "os";
 import type { Config, LLMManager, TransportClient, Backend, Mode, IncomingMessage, IncomingAttachment, EndpointConfig } from "./types.js";
 import { createSessionClient } from "./session.js";
@@ -769,6 +769,55 @@ export function createProxy(config: Config) {
       if (llm.isAlive()) await llm.kill();
       await context.reset();
     } else {
+      if (cmdResult.relocateDir) {
+        watchLog(`📦 Relocating to ${cmdResult.relocateDir}`);
+        if (llm.isAlive()) await llm.kill();
+        await sessionClient.send(cmdResult.response);
+        // Move .snoot/<channel> to new directory
+        const oldSnootDir = resolve(config.workDir, ".snoot", config.channel);
+        const newSnootDir = resolve(cmdResult.relocateDir, ".snoot", config.channel);
+        try {
+          mkdirSync(resolve(cmdResult.relocateDir, ".snoot"), { recursive: true });
+          if (oldSnootDir !== newSnootDir) {
+            cpSync(oldSnootDir, newSnootDir, { recursive: true });
+            // Remove old dir after successful copy (renameSync fails across devices)
+            const { execSync } = await import("child_process");
+            execSync(`rm -rf ${JSON.stringify(oldSnootDir)}`);
+          }
+          // Update launch.json with new cwd
+          const launchFile = resolve(newSnootDir, "launch.json");
+          if (existsSync(launchFile)) {
+            try {
+              const launch = JSON.parse(readFileSync(launchFile, "utf-8"));
+              if (launch.cwd) launch.cwd = cmdResult.relocateDir;
+              writeFileSync(launchFile, JSON.stringify(launch));
+            } catch {}
+          }
+          // Update instance registry
+          const registryFile = resolve(homedir(), ".snoot", "instances", `${config.channel}.json`);
+          if (existsSync(registryFile)) {
+            try {
+              const inst = JSON.parse(readFileSync(registryFile, "utf-8"));
+              inst.cwd = cmdResult.relocateDir;
+              writeFileSync(registryFile, JSON.stringify(inst, null, 2));
+            } catch {}
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          watchLog(`❌ Relocate failed: ${msg}`);
+          await sessionClient.send(`Relocate failed: ${msg}`);
+          return true;
+        }
+        Bun.spawn(config.selfCommand, {
+          cwd: cmdResult.relocateDir,
+          env: process.env,
+          stdout: "inherit",
+          stderr: "inherit",
+          stdin: "ignore",
+        }).unref();
+        process.exit(0);
+        return true;
+      }
       if (cmdResult.restartProcess || cmdResult.moveChannel) {
         watchLog(`🔄 Restarting snoot`);
         if (llm.isAlive()) await llm.kill();

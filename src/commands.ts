@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, chmodSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, chmodSync, statSync } from "fs";
 import { resolve, dirname } from "path";
 import { homedir } from "os";
 import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
@@ -44,6 +44,7 @@ export function handleCommand(
           "  /btw <question> — side question (can read code, no edits)",
           "  /rename <name> — change display name (restarts)",
           "  /move <name> — move to new channel (restarts, new chat on phone)",
+          "  /relocate <path> — move to a different working directory",
           "  /save <name> + attachment — save file to working directory",
           "  /overwrite <name> + attachment — same, but allows overwriting",
           `  ${config.channel}.snoot.md — per-instance prompt (in project dir)`,
@@ -329,6 +330,31 @@ export function handleCommand(
       return {
         response: `Moving "${config.channel}" to "${newChannel}". This will start a new chat on your phone (server-side context is preserved). Restarting...`,
         moveChannel: newChannel,
+      };
+    }
+
+    case "/relocate": {
+      if (!args) {
+        return { response: `Usage: /relocate <path>\n\nMoves this snoot to work in a different directory. Accepts relative paths (including ../).\n\nCurrent: ${config.workDir}` };
+      }
+      const targetDir = resolve(config.workDir, args);
+      if (targetDir === resolve(config.workDir)) {
+        return { response: `Already working in ${config.workDir}` };
+      }
+      if (!existsSync(targetDir)) {
+        return { response: `Directory not found: ${targetDir}` };
+      }
+      try {
+        const stat = statSync(targetDir);
+        if (!stat.isDirectory()) {
+          return { response: `Not a directory: ${targetDir}` };
+        }
+      } catch {
+        return { response: `Cannot access: ${targetDir}` };
+      }
+      return {
+        response: `Relocating to ${targetDir}. Restarting...`,
+        relocateDir: targetDir,
       };
     }
 

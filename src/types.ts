@@ -166,6 +166,7 @@ export interface CommandResult {
   triggerCompaction?: boolean;
   restartProcess?: boolean;
   moveChannel?: string; // new channel name for /move — proxy handles restart with new name
+  relocateDir?: string; // absolute path for /relocate — proxy handles move + restart
   saveWindow?: boolean; // persist windowSize to settings
 }
 
