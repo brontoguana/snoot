@@ -187,6 +187,7 @@ export function createProxy(config: Config) {
     if (llm.isAlive()) await llm.kill();
     config.backend = name;
     config.endpointConfig = ep;
+    config.model = undefined; // reset model — old backend's model won't work on new one
     if (ep.type === "cli") {
       config.cliPath = findCliPath(ep.cli || name);
     }
