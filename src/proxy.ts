@@ -797,7 +797,7 @@ export function createProxy(config: Config) {
         try { await sessionClient.send("📦 Compacting context..."); } catch {}
         const result = await context.compact(true);
         if (result) {
-          try { await sessionClient.send(`Compact done. Summarized ${result.compacted} messages, ${result.remaining} remaining.`); } catch {}
+          try { await sessionClient.send(`✅ Compact done. Summarized ${result.compacted} messages, ${result.remaining} remaining.`); } catch {}
         } else {
           try { await sessionClient.send("Nothing to compact."); } catch {}
         }
