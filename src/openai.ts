@@ -254,16 +254,16 @@ function shortPath(p: string): string {
   return dir && dir !== "." ? `${dir}/${file}` : file;
 }
 
-function formatToolUse(name: string, args: any): string {
+function formatToolUse(name: string, args: any, pathFn: (p: string) => string = shortPath): string {
   switch (name) {
-    case "Read": return `Read ${args?.file_path ? shortPath(args.file_path) : ""}`;
-    case "Edit": return `Edit ${args?.file_path ? shortPath(args.file_path) : ""}`;
-    case "Write": return `Write ${args?.file_path ? shortPath(args.file_path) : ""}`;
-    case "Patch": return `Patch ${args?.file_path ? shortPath(args.file_path) : ""} (${args?.edits?.length || 0} edits)`;
+    case "Read": return `Read ${args?.file_path ? pathFn(args.file_path) : ""}`;
+    case "Edit": return `Edit ${args?.file_path ? pathFn(args.file_path) : ""}`;
+    case "Write": return `Write ${args?.file_path ? pathFn(args.file_path) : ""}`;
+    case "Patch": return `Patch ${args?.file_path ? pathFn(args.file_path) : ""} (${args?.edits?.length || 0} edits)`;
     case "Bash": return `Bash: ${(args?.command || "").slice(0, 120)}`;
-    case "Grep": return `Grep "${args?.pattern || ""}" in ${args?.path ? shortPath(args.path) : "."}`;
+    case "Grep": return `Grep "${args?.pattern || ""}" in ${args?.path ? pathFn(args.path) : "."}`;
     case "Glob": return `Glob ${args?.pattern || ""}`;
-    case "ListDirectory": return `ListDir ${args?.path ? shortPath(args.path) : "."}`;
+    case "ListDirectory": return `ListDir ${args?.path ? pathFn(args.path) : "."}`;
     case "WebFetch": return `WebFetch: ${(args?.url || "").slice(0, 100)}`;
     case "WebSearch": return `WebSearch: ${(args?.query || "").slice(0, 100)}`;
     case "Think": return `Think (${(args?.thought || "").slice(0, 60)}...)`;
@@ -783,9 +783,10 @@ export function createOpenAIManager(config: Config): LLMManager {
           }
 
           const detail = formatToolUse(tc.name, args);
+          const trackingDetail = formatToolUse(tc.name, args, p => p);
           console.log(`[${label}] Tool use: ${detail}`);
           emitActivity(`🔧 ${detail}`);
-          for (const cb of toolUseCallbacks) cb(detail);
+          for (const cb of toolUseCallbacks) cb(trackingDetail);
 
           const toolResult = await executeTool(tc.name, args, config.workDir);
           lastActivityAt = Date.now();

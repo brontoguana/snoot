@@ -36,7 +36,7 @@ export function handleCommand(
           `  /gemini — shortcut for /endpoint gemini`,
           `  /model <name> — switch model (e.g. opus, sonnet, gemini-2.5-pro)`,
           `  /effort <level> — set effort (low/medium/high/max/default)`,
-          `  /window <tokens> — set context window size (history=70%, compact at +15%)`,
+          `  /window <n> — set conversation window to n messages`,
           "  /pin <text> — pin context that survives compaction",
           "  /unpin <id> — remove a pinned item",
           "  /profile <description> — generate avatar from description",
@@ -110,7 +110,7 @@ export function handleCommand(
           `${statusName}: ${llm.isAlive() ? "processing" : "idle"}`,
           `Messages: ${state.totalPairs} total, ${context.getRecent().length} in window`,
           `Pins: ${state.pins.length}`,
-          `Context window: ${config.contextBudget} tokens (history: ${Math.floor(config.contextBudget * 0.7)}, compact at +15%)`,
+          `Window: ${config.windowSize} messages (compact at +10)`,
         ].join("\n"),
       };
     }
@@ -129,6 +129,26 @@ export function handleCommand(
         parts.push("No pinned items.");
       }
 
+      if (state.recentFiles && state.recentFiles.length > 0) {
+        const now = Date.now();
+        parts.push("\nRecent files:");
+        for (const f of state.recentFiles) {
+          const ago = Math.floor((now - f.timestamp) / 60_000);
+          const agoStr = ago < 1 ? "just now" : ago < 60 ? `${ago}m ago` : `${Math.floor(ago / 60)}h ago`;
+          parts.push(`  ${f.path} (${f.ops.join(",")}) ${agoStr}`);
+        }
+      }
+
+      if (state.recentCommands && state.recentCommands.length > 0) {
+        const now = Date.now();
+        parts.push("\nRecent commands:");
+        for (const c of state.recentCommands) {
+          const ago = Math.floor((now - c.timestamp) / 60_000);
+          const agoStr = ago < 1 ? "just now" : ago < 60 ? `${ago}m ago` : `${Math.floor(ago / 60)}h ago`;
+          parts.push(`  ${c.cmd} ${agoStr}`);
+        }
+      }
+
       if (summary) {
         parts.push("\nSummary:");
         parts.push(summary);
@@ -136,7 +156,7 @@ export function handleCommand(
         parts.push("\nNo summary yet.");
       }
 
-      parts.push(`\n${context.getRecent().length} messages in current window.`);
+      parts.push(`\n${context.getRecent().length} messages in window (max ${config.windowSize}).`);
 
       return { response: parts.join("\n") };
     }
@@ -160,21 +180,17 @@ export function handleCommand(
 
     case "/window": {
       if (!args) {
-        const historyTarget = Math.floor(config.contextBudget * 0.7);
-        const compactAt = Math.floor(historyTarget * 1.15);
         return {
-          response: `Context window: ${config.contextBudget} tokens\nHistory target: ${historyTarget} tokens (70%)\nCompaction at: ${compactAt} tokens (+15%)\n\nUsage: /window <tokens> (e.g. /window 50000)`,
+          response: `Window: ${config.windowSize} messages\nCompaction at: ${config.windowSize + 10} messages\nCurrent: ${context.getRecent().length} messages in window\n\nUsage: /window <n> (e.g. /window 20)`,
         };
       }
       const n = parseInt(args, 10);
-      if (isNaN(n) || n < 5000) {
-        return { response: "Window size must be a number >= 5000." };
+      if (isNaN(n) || n < 3) {
+        return { response: "Window size must be a number >= 3." };
       }
-      config.contextBudget = n;
-      const historyTarget = Math.floor(n * 0.7);
-      const compactAt = Math.floor(historyTarget * 1.15);
+      config.windowSize = n;
       return {
-        response: `Context window set to ${n} tokens.\nHistory target: ${historyTarget} (70%)\nCompaction at: ${compactAt} (+15%)`,
+        response: `Window set to ${n} messages. Auto-compact at ${n + 10}.`,
         killProcess: true,
         saveWindow: true,
       };

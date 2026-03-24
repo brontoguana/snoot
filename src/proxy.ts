@@ -23,8 +23,7 @@ function backendEmoji(backend: string, ep?: EndpointConfig): string {
 
 function thinkingStatus(config: Config): string {
   const emoji = backendEmoji(config.backend, config.endpointConfig);
-  const windowK = Math.round(config.contextBudget / 1000) + "k";
-  const parts = [emoji, windowK];
+  const parts = [emoji, `${config.windowSize}msg`];
   if (config.model) parts.push(config.model);
   if (config.effort) parts.push(config.effort);
   return parts.join(" · ");
@@ -67,7 +66,7 @@ export function createProxy(config: Config) {
     const data: Record<string, string | number> = { backend: config.backend };
     if (config.model) data.model = config.model;
     if (config.effort) data.effort = config.effort;
-    if (config.contextBudget) data.contextBudget = config.contextBudget;
+    if (config.windowSize) data.windowSize = config.windowSize;
     try { writeFileSync(settingsPath, JSON.stringify(data)); } catch {}
   }
 
@@ -152,6 +151,7 @@ export function createProxy(config: Config) {
 
     llm.onToolUse((detail) => {
       contextTrace.push(`[${detail}]`);
+      context.trackToolUse(detail);
     });
 
     llm.onActivity((line) => {
@@ -792,12 +792,12 @@ export function createProxy(config: Config) {
         await llm.kill();
       }
       if (cmdResult.triggerCompaction) {
-        watchLog(`📦 Compacting context`);
-        await context.compact();
+        watchLog(`📦 Compacting context (aggressive)`);
+        await context.compact(true);
       }
       if (cmdResult.saveWindow) {
         saveSettings();
-        watchLog(`📏 Context window → ${config.contextBudget}`);
+        watchLog(`📏 Window → ${config.windowSize} messages`);
       }
     }
 

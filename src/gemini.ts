@@ -9,13 +9,13 @@ function shortPath(p: string): string {
   return dir && dir !== "." ? `${dir}/${file}` : file;
 }
 
-function formatToolUse(name: string, input: any): string {
+function formatToolUse(name: string, input: any, pathFn: (p: string) => string = shortPath): string {
   switch (name) {
-    case "read_file": return `Read ${input?.file_path ? shortPath(input.file_path) : ""}`;
-    case "replace": return `Edit ${input?.file_path ? shortPath(input.file_path) : ""}`;
-    case "write_file": return `Write ${input?.file_path ? shortPath(input.file_path) : ""}`;
+    case "read_file": return `Read ${input?.file_path ? pathFn(input.file_path) : ""}`;
+    case "replace": return `Edit ${input?.file_path ? pathFn(input.file_path) : ""}`;
+    case "write_file": return `Write ${input?.file_path ? pathFn(input.file_path) : ""}`;
     case "run_shell_command": return `Bash: ${(input?.command || "").slice(0, 120)}`;
-    case "grep_search": return `Grep "${input?.pattern || ""}" in ${input?.dir_path ? shortPath(input.dir_path) : "."}`;
+    case "grep_search": return `Grep "${input?.pattern || ""}" in ${input?.dir_path ? pathFn(input.dir_path) : "."}`;
     case "glob": return `Glob ${input?.pattern || ""}`;
     case "google_web_search": return `WebSearch: ${(input?.query || "").slice(0, 100)}`;
     case "web_fetch": return `WebFetch: ${(input?.url || "").slice(0, 100)}`;
@@ -102,7 +102,7 @@ export function createGeminiManager(config: Config): LLMManager {
           events.push({ kind: "log", message: `Session initialized: model=${json.model}` });
           break;
         case "tool_use":
-          events.push({ kind: "tool_use", detail: formatToolUse(json.tool_name, json.parameters) });
+          events.push({ kind: "tool_use", detail: formatToolUse(json.tool_name, json.parameters), trackingDetail: formatToolUse(json.tool_name, json.parameters, p => p) });
           break;
         case "tool_result":
           events.push({ kind: "log", message: `Tool result: ${json.tool_id} (${json.status})` });

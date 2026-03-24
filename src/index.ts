@@ -198,7 +198,8 @@ interface GlobalConfig {
   matrixAccessToken?: string;
   matrixDeviceId?: string;
   budgetUsd?: number;
-  contextBudget?: number;
+  contextBudget?: number; // legacy, migrated to windowSize
+  windowSize?: number;
   endpoints?: Record<string, EndpointConfig>;
 }
 
@@ -921,7 +922,7 @@ Options:
   --backend <endpoint>  LLM endpoint to use (default: claude)
   --endpoint <endpoint> Same as --backend
   --budget <usd>        Max budget per message in USD (no limit by default)
-  --context-budget <n>  Context budget in tokens (default: 50000)
+  --window <n>          Conversation window size in messages (default: 20)
   --fg                  Run in foreground instead of daemonizing
 
 Commands:
@@ -981,7 +982,7 @@ Commands:
   let mode: Mode = "coding";
   let backend: Backend = "claude";
   let budgetUsd: number | undefined = undefined;
-  let contextBudget = 50_000;
+  let windowSize = 20;
   let foreground = false;
   let backendFromCli = false;
 
@@ -1006,8 +1007,14 @@ Commands:
         budgetUsd = parseFloat(args[++i] ?? "");
         if (isNaN(budgetUsd)) budgetUsd = undefined;
         break;
+      case "--window":
       case "--context-budget":
-        contextBudget = parseInt(args[++i] ?? "50000", 10);
+        windowSize = parseInt(args[++i] ?? "20", 10);
+        if (windowSize > 1000) {
+          // Migrate old token-based value to reasonable message count
+          console.log(`[snoot] Migrating old token-based --context-budget ${windowSize} to message count 20`);
+          windowSize = 20;
+        }
         break;
       case "--fg":
         foreground = true;
@@ -1075,9 +1082,12 @@ Commands:
       }
       if (saved.model) savedModel = saved.model;
       if (saved.effort) savedEffort = saved.effort;
-      if (saved.contextBudget !== undefined) {
-        const parsed = parseInt(String(saved.contextBudget), 10);
-        if (!isNaN(parsed) && parsed >= 5000) contextBudget = parsed;
+      if (saved.windowSize !== undefined) {
+        const parsed = parseInt(String(saved.windowSize), 10);
+        if (!isNaN(parsed) && parsed >= 3) windowSize = parsed;
+      } else if (saved.contextBudget !== undefined) {
+        // Legacy migration: old settings had token-based contextBudget
+        console.log(`[snoot] Migrating legacy contextBudget from settings, using default window ${windowSize}`);
       }
     } catch {}
   }
@@ -1087,12 +1097,10 @@ Commands:
     budgetUsd = globalConfig.budgetUsd;
   }
 
-  // Resolve context budget: --context-budget flag > settings.json > global config > default
-  // settings.json was loaded above and may have already set contextBudget
-  const contextBudgetFromCli = args.some((a, i) => a === "--context-budget" && args[i + 1]);
-  if (!contextBudgetFromCli && contextBudget === 50_000 && globalConfig?.contextBudget !== undefined) {
-    // Only apply global config if neither CLI flag nor settings.json set it
-    contextBudget = globalConfig.contextBudget;
+  // Resolve window size: --window flag > settings.json > global config > default
+  const windowFromCli = args.some((a, i) => (a === "--window" || a === "--context-budget") && args[i + 1]);
+  if (!windowFromCli && windowSize === 20 && globalConfig?.windowSize !== undefined) {
+    windowSize = globalConfig.windowSize;
   }
 
   // Resolve endpoint config
@@ -1127,7 +1135,7 @@ Commands:
     model: savedModel,
     effort: savedEffort,
     budgetUsd,
-    contextBudget,
+    windowSize,
     baseDir,
     workDir: process.cwd(),
     cliPath,
@@ -1337,7 +1345,7 @@ async function main(): Promise<void> {
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
-  console.log(`  Context window: ${config.contextBudget} tokens (history: ${Math.floor(config.contextBudget * 0.7)})`);
+  console.log(`  Window: ${config.windowSize} messages (compact at +10)`);
 
   console.log(`  CLI path: ${config.cliPath || "(not found)"}`);
   if (!config.cliPath) {

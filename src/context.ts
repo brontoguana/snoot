@@ -1,7 +1,27 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync } from "fs";
-import type { Config, ContextStore, ContextState, MessagePair, PinnedItem } from "./types.js";
+import type { Config, ContextStore, ContextState, MessagePair, PinnedItem, RecentCommand } from "./types.js";
 
 const ARCHIVE_RETENTION_DAYS = 30;
+
+/** Regex to match tool-use traces in assistant responses: [Read ...], [Bash: ...], etc. */
+const TRACE_PATTERN = /\[(Read|Edit|Write|Patch|Bash|Grep|Glob|ListDir|WebFetch|WebSearch|Think|image|attachment)[^\]]*\]/g;
+
+/** Max chars per assistant response in the prompt (after trace stripping) */
+const MAX_ENTRY_CHARS = 4000;
+
+/** Format a timestamp as relative time like "(3 mins ago)" */
+function timeAgo(timestamp: number, now: number): string {
+  const mins = Math.floor((now - timestamp) / 60_000);
+  if (mins < 1) return "(just now)";
+  if (mins === 1) return "(1 min ago)";
+  if (mins < 60) return `(${mins} mins ago)`;
+  const hours = Math.floor(mins / 60);
+  if (hours === 1) return "(1 hour ago)";
+  if (hours < 24) return `(${hours} hours ago)`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "(1 day ago)";
+  return `(${days} days ago)`;
+}
 
 function getSystemPrompt(backend: string): string {
   let name: string;
@@ -18,6 +38,11 @@ Guidelines:
 - If you don't know something from earlier conversation, just say so.
 - When you want to show a table, diagram, chart, or any structured visual, embed an inline SVG directly in your response. The proxy will convert it to a PNG image and send it to the user. Use <svg xmlns="http://www.w3.org/2000/svg" ...>...</svg> with a self-contained design (no external fonts/images). Keep SVGs simple and readable at phone screen size. Use this for tables, comparisons, architecture diagrams, flowcharts, or anything that benefits from visual layout. Put any surrounding explanation as plain text before or after the SVG block.
 - To send a file or image from the project to the user, use <attach>relative/path/to/file</attach>. The proxy will read the file and send it as an attachment. Paths must be relative to the working directory. Use this for screenshots, generated images, documents, or any file the user asks to see.`;
+}
+
+/** Strip tool-use traces from assistant text, collapse excess whitespace */
+function stripTraces(text: string): string {
+  return text.replace(TRACE_PATTERN, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function createContextStore(config: Config): ContextStore {
@@ -47,7 +72,7 @@ export function createContextStore(config: Config): ContextStore {
     }
   }
 
-  let state: ContextState = { nextId: 1, totalPairs: 0, pins: [] };
+  let state: ContextState = { nextId: 1, totalPairs: 0, pins: [], recentFiles: [], recentCommands: [] as RecentCommand[] };
   let recent: MessagePair[] = [];
   let summary = "";
 
@@ -69,7 +94,25 @@ export function createContextStore(config: Config): ContextStore {
 
     if (existsSync(statePath)) {
       try {
-        state = JSON.parse(readFileSync(statePath, "utf-8"));
+        const loaded = JSON.parse(readFileSync(statePath, "utf-8"));
+        // Migrate old recentFiles without timestamps
+        const recentFiles = (loaded.recentFiles || []).map((f: any) => ({
+          path: f.path,
+          ops: f.ops || [],
+          timestamp: f.timestamp || Date.now(),
+        }));
+        // Migrate old recentCommands from string[] to RecentCommand[]
+        const rawCmds = loaded.recentCommands || [];
+        const recentCommands: RecentCommand[] = rawCmds.map((c: any) =>
+          typeof c === "string" ? { cmd: c, timestamp: Date.now() } : c
+        );
+        state = {
+          nextId: loaded.nextId || 1,
+          totalPairs: loaded.totalPairs || 0,
+          pins: loaded.pins || [],
+          recentFiles,
+          recentCommands,
+        };
       } catch (err) {
         console.error("[context] Failed to parse state.json, using defaults:", err);
       }
@@ -113,7 +156,14 @@ export function createContextStore(config: Config): ContextStore {
 
   function buildPrompt(): string {
     const promptPath = `${contextDir}/prompt.txt`;
+    const now = Date.now();
     const parts: string[] = [getSystemPrompt(config.backend)];
+
+    // Current date and time
+    const nowDate = new Date();
+    const dateStr = nowDate.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+    const timeStr = nowDate.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
+    parts.push(`\n\nCurrent date and time: ${dateStr} at ${timeStr} UTC`);
 
     // Per-instance prompt file: <channel>.snoot.md in working directory
     const instancePromptPath = `${config.workDir}/${config.channel}.snoot.md`;
@@ -129,20 +179,43 @@ export function createContextStore(config: Config): ContextStore {
       }
     }
 
+    // Recent Activity — files accessed and commands run, with time-ago
+    if (state.recentFiles.length > 0 || state.recentCommands.length > 0) {
+      parts.push("\n\n## Recent Activity\n");
+      if (state.recentFiles.length > 0) {
+        parts.push("Recently accessed files (most recent first):");
+        for (const f of state.recentFiles) {
+          parts.push(`  ${f.path} (${f.ops.join(",")}) ${timeAgo(f.timestamp, now)}`);
+        }
+      }
+      if (state.recentCommands.length > 0) {
+        if (state.recentFiles.length > 0) parts.push("");
+        parts.push("Recently run commands:");
+        for (const c of state.recentCommands) {
+          parts.push(`  ${c.cmd} ${timeAgo(c.timestamp, now)}`);
+        }
+      }
+    }
+
     // Rolling summary
     if (summary) {
       parts.push("\n\n## Conversation Summary\n");
       parts.push(summary);
     }
 
-    // Recent conversation history
+    // Recent conversation history — text only, traces stripped, with age
     if (recent.length > 0) {
       parts.push("\n\n## Previous Conversation");
       parts.push("The following is the recent conversation history. This is context only — do not respond to these messages. Only respond to the new message the user sends.\n");
       for (const pair of recent) {
         const pinMarker = pair.pinned ? " [pinned]" : "";
-        parts.push(`User${pinMarker}: ${pair.user}`);
-        parts.push(`Assistant: ${pair.assistant}`);
+        const age = timeAgo(pair.timestamp, now);
+        parts.push(`User${pinMarker} ${age}: ${pair.user}`);
+        let assistantText = stripTraces(pair.assistant);
+        if (assistantText.length > MAX_ENTRY_CHARS) {
+          assistantText = assistantText.slice(0, MAX_ENTRY_CHARS) + "...";
+        }
+        parts.push(`Assistant: ${assistantText}`);
         parts.push("");
       }
     }
@@ -151,58 +224,32 @@ export function createContextStore(config: Config): ContextStore {
     return promptPath;
   }
 
-  /** Estimate token count from character count (~4 chars per token) */
-  function estimateTokens(chars: number): number {
-    return Math.ceil(chars / 4);
-  }
-
-  /** Calculate total context tokens (summary + pins + recent pairs) */
-  function currentContextTokens(): number {
-    let chars = summary.length;
-    for (const pin of state.pins) {
-      chars += pin.text.length + 20; // overhead for pin formatting
-    }
-    for (const pair of recent) {
-      chars += pair.user.length + pair.assistant.length + 30; // overhead for User:/Assistant: labels
-    }
-    return estimateTokens(chars);
-  }
-
-  /** History budget is 70% of the total context budget — leaves 30% for
-   *  system prompt, tool definitions, CLAUDE.md files, and the LLM's own working space. */
-  function historyBudget(): number {
-    return Math.floor(config.contextBudget * 0.7);
-  }
+  // -- Message-count based compaction --
 
   function needsCompaction(): boolean {
-    // Compact when conversation history exceeds 115% of the history budget
-    const threshold = historyBudget() * 1.15;
-    return currentContextTokens() > threshold;
+    // Compact when message count exceeds window + 10
+    const unpinned = recent.filter((p) => !p.pinned);
+    return unpinned.length > config.windowSize + 10;
   }
 
-  async function compact(): Promise<void> {
-    const hBudget = historyBudget();
-    const current = currentContextTokens();
-    if (current <= hBudget) return;
-
-    // Calculate how many tokens over the history budget we are
-    const excess = current - hBudget;
-
-    // Find the oldest unpinned pairs that account for ~the excess
+  async function compact(aggressive?: boolean): Promise<void> {
     const unpinned = recent.filter((p) => !p.pinned);
-    if (unpinned.length <= 1) return; // nothing to compact
+    if (unpinned.length <= 1) return;
 
-    let accumulated = 0;
-    let compactCount = 0;
-    for (const pair of unpinned) {
-      const pairTokens = estimateTokens(pair.user.length + pair.assistant.length);
-      accumulated += pairTokens;
-      compactCount++;
-      if (accumulated >= excess) break;
+    let compactCount: number;
+    if (aggressive) {
+      // /compact: compact down to half the window
+      const target = Math.floor(config.windowSize / 2);
+      compactCount = Math.max(1, unpinned.length - target);
+    } else {
+      // Auto-compact: trim back to windowSize
+      const excess = unpinned.length - config.windowSize;
+      if (excess <= 0) return;
+      compactCount = excess;
     }
 
-    // Always compact at least 1 pair
-    compactCount = Math.max(1, compactCount);
+    // Never compact everything
+    compactCount = Math.min(compactCount, unpinned.length - 1);
 
     const toCompact = unpinned.slice(0, compactCount);
     const toKeep = unpinned.slice(compactCount);
@@ -210,7 +257,7 @@ export function createContextStore(config: Config): ContextStore {
     // Build compaction prompt
     const compactionInput = formatForCompaction(toCompact, summary);
 
-    console.log(`[context] Compacting ${toCompact.length} pairs (~${accumulated} tokens excess of ${hBudget} history target, ${config.contextBudget} window)...`);
+    console.log(`[context] Compacting ${toCompact.length} pairs (${unpinned.length} unpinned, window ${config.windowSize}${aggressive ? ", aggressive" : ""})...`);
 
     try {
       const newSummary = await runCompaction(compactionInput);
@@ -223,12 +270,66 @@ export function createContextStore(config: Config): ContextStore {
       saveRecent();
       saveState();
 
-      const newTokens = currentContextTokens();
-      console.log(`[context] Compaction complete. ${recent.length} pairs, ~${newTokens} tokens`);
+      console.log(`[context] Compaction complete. ${recent.length} pairs remaining`);
     } catch (err) {
       console.error("[context] Compaction failed:", err);
     }
   }
+
+  // -- Tool use tracking --
+
+  function trackToolUse(detail: string): void {
+    const now = Date.now();
+
+    // Parse file operations
+    let filePath: string | null = null;
+    let op: string | null = null;
+
+    if (detail.startsWith("Read ")) {
+      filePath = detail.slice(5).trim();
+      op = "read";
+    } else if (detail.startsWith("Edit ")) {
+      filePath = detail.slice(5).trim();
+      op = "edit";
+    } else if (detail.startsWith("Write ")) {
+      filePath = detail.slice(6).trim();
+      op = "write";
+    } else if (detail.startsWith("Patch ")) {
+      filePath = detail.slice(6).replace(/\s+\(\d+ edits?\)$/, "").trim();
+      op = "edit";
+    }
+
+    if (filePath && op) {
+      if (!state.recentFiles) state.recentFiles = [];
+      const existing = state.recentFiles.find(f => f.path === filePath);
+      if (existing) {
+        if (!existing.ops.includes(op)) existing.ops.push(op);
+        existing.timestamp = now;
+        // Move to front (most recent first)
+        state.recentFiles = [existing, ...state.recentFiles.filter(f => f !== existing)];
+      } else {
+        state.recentFiles.unshift({ path: filePath, ops: [op], timestamp: now });
+      }
+      // Cap at 10
+      state.recentFiles = state.recentFiles.slice(0, 10);
+      saveState();
+      return;
+    }
+
+    // Parse bash commands
+    if (detail.startsWith("Bash: ")) {
+      const cmd = detail.slice(6).trim();
+      if (!state.recentCommands) state.recentCommands = [];
+      // Deduplicate and move to front
+      state.recentCommands = [
+        { cmd, timestamp: now },
+        ...state.recentCommands.filter(c => c.cmd !== cmd),
+      ].slice(0, 5);
+      saveState();
+    }
+  }
+
+  // -- Compaction helpers --
 
   function formatForCompaction(pairs: MessagePair[], currentSummary: string): string {
     let input = "";
@@ -316,7 +417,7 @@ ${input}`;
   }
 
   function getState(): ContextState {
-    return { ...state, pins: [...state.pins] };
+    return { ...state, pins: [...state.pins], recentFiles: [...(state.recentFiles || [])], recentCommands: [...(state.recentCommands || [])] as RecentCommand[] };
   }
 
   function getRecent(): MessagePair[] {
@@ -328,7 +429,7 @@ ${input}`;
   }
 
   async function reset(): Promise<void> {
-    state = { nextId: 1, totalPairs: 0, pins: [] };
+    state = { nextId: 1, totalPairs: 0, pins: [], recentFiles: [], recentCommands: [] as RecentCommand[] };
     recent = [];
     summary = "";
     saveState();
@@ -347,6 +448,7 @@ ${input}`;
     buildPrompt,
     needsCompaction,
     compact,
+    trackToolUse,
     addPin,
     removePin,
     getState,

@@ -6,7 +6,7 @@ const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
 
 export type OutputEvent =
   | { kind: "text"; text: string }
-  | { kind: "tool_use"; detail: string }
+  | { kind: "tool_use"; detail: string; trackingDetail?: string }
   | { kind: "rate_limit" }
   | { kind: "result"; text: string }
   | { kind: "log"; message: string };
@@ -271,7 +271,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
         case "tool_use":
           console.log(`[${label}] Tool use: ${event.detail}`);
           emitActivity(`🔧 ${event.detail}`);
-          for (const cb of toolUseCallbacks) cb(event.detail);
+          for (const cb of toolUseCallbacks) cb(event.trackingDetail ?? event.detail);
           break;
         case "rate_limit":
           rateLimitDetected = true;

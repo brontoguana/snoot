@@ -28,7 +28,7 @@ export interface Config {
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
   effort?: string; // effort level: "low", "medium", "high", "max" (Claude only)
   budgetUsd?: number; // undefined = no budget limit
-  contextBudget: number; // total context budget in estimated tokens (default 50000; history=70%, compact at +15%)
+  windowSize: number; // max message pairs in conversation history (default 20; compact when exceeded by 10)
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
   endpointConfig?: EndpointConfig; // resolved endpoint config for current backend
@@ -52,10 +52,23 @@ export interface PinnedItem {
   timestamp: number;
 }
 
+export interface RecentFile {
+  path: string;
+  ops: string[]; // e.g. ["read", "edit"]
+  timestamp: number; // last accessed time
+}
+
+export interface RecentCommand {
+  cmd: string;
+  timestamp: number;
+}
+
 export interface ContextState {
   nextId: number;
   totalPairs: number;
   pins: PinnedItem[];
+  recentFiles: RecentFile[];
+  recentCommands: RecentCommand[];
 }
 
 // -- Claude stream-json protocol --
@@ -153,7 +166,7 @@ export interface CommandResult {
   triggerCompaction?: boolean;
   restartProcess?: boolean;
   moveChannel?: string; // new channel name for /move — proxy handles restart with new name
-  saveWindow?: boolean; // persist contextBudget to settings
+  saveWindow?: boolean; // persist windowSize to settings
 }
 
 // -- Context Store --
@@ -163,7 +176,8 @@ export interface ContextStore {
   append(pair: MessagePair): Promise<void>;
   buildPrompt(): string;
   needsCompaction(): boolean;
-  compact(): Promise<void>;
+  compact(aggressive?: boolean): Promise<void>;
+  trackToolUse(detail: string): void;
   addPin(text: string): Promise<PinnedItem>;
   removePin(id: number): PinnedItem | null;
   getState(): ContextState;

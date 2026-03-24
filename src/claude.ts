@@ -9,13 +9,13 @@ function shortPath(p: string): string {
   return dir && dir !== "." ? `${dir}/${file}` : file;
 }
 
-function formatToolUse(name: string, input: any): string {
+function formatToolUse(name: string, input: any, pathFn: (p: string) => string = shortPath): string {
   switch (name) {
-    case "Read": return `Read ${input?.file_path ? shortPath(input.file_path) : ""}`;
-    case "Edit": return `Edit ${input?.file_path ? shortPath(input.file_path) : ""}`;
-    case "Write": return `Write ${input?.file_path ? shortPath(input.file_path) : ""}`;
+    case "Read": return `Read ${input?.file_path ? pathFn(input.file_path) : ""}`;
+    case "Edit": return `Edit ${input?.file_path ? pathFn(input.file_path) : ""}`;
+    case "Write": return `Write ${input?.file_path ? pathFn(input.file_path) : ""}`;
     case "Bash": return `Bash: ${(input?.command || "").slice(0, 120)}`;
-    case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path ? shortPath(input.path) : "."}`;
+    case "Grep": return `Grep "${input?.pattern || ""}" in ${input?.path ? pathFn(input.path) : "."}`;
     case "Glob": return `Glob ${input?.pattern || ""}`;
     case "WebSearch": return `WebSearch: ${(input?.query || "").slice(0, 100)}`;
     case "WebFetch": return `WebFetch: ${(input?.url || "").slice(0, 100)}`;
@@ -86,7 +86,7 @@ export function createClaudeManager(config: Config): LLMManager {
               if (block.type === "text" && block.text) {
                 events.push({ kind: "text", text: block.text });
               } else if (block.type === "tool_use") {
-                events.push({ kind: "tool_use", detail: formatToolUse(block.name, block.input) });
+                events.push({ kind: "tool_use", detail: formatToolUse(block.name, block.input), trackingDetail: formatToolUse(block.name, block.input, p => p) });
               }
             }
           }
