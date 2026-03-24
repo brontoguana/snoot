@@ -802,6 +802,35 @@ export function createProxy(config: Config) {
               writeFileSync(registryFile, JSON.stringify(inst, null, 2));
             } catch {}
           }
+          // Update cron/scheduled task entry if one exists
+          try {
+            if (IS_WINDOWS) {
+              const batPath = resolve(homedir(), ".snoot", "startup", `${config.channel}.bat`);
+              if (existsSync(batPath)) {
+                const bat = readFileSync(batPath, "utf-8");
+                const updated = bat.replace(/cd \/d "[^"]*"/, `cd /d "${cmdResult.relocateDir}"`);
+                if (updated !== bat) writeFileSync(batPath, updated);
+              }
+            } else {
+              const cronResult = Bun.spawnSync(["crontab", "-l"]);
+              if (cronResult.exitCode === 0) {
+                const crontab = cronResult.stdout.toString();
+                const tag = `# snoot:${config.channel}`;
+                const lines = crontab.split("\n").map(line => {
+                  if (!line.includes(tag)) return line;
+                  // Replace cd <old_path> (unquoted or single-quoted) with cd <new_path>
+                  const newPath = /^[a-zA-Z0-9._\-\/=:@]+$/.test(cmdResult.relocateDir!)
+                    ? cmdResult.relocateDir!
+                    : `'${cmdResult.relocateDir!.replace(/'/g, "'\\''")}'`;
+                  return line.replace(/cd\s+(?:'[^']*'|\S+)/, `cd ${newPath}`);
+                });
+                const updated = lines.join("\n");
+                if (updated !== crontab) {
+                  Bun.spawnSync(["crontab", "-"], { stdin: Buffer.from(updated) });
+                }
+              }
+            }
+          } catch {}  // Non-fatal — cron update is best-effort
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           watchLog(`❌ Relocate failed: ${msg}`);
