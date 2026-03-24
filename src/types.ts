@@ -28,7 +28,7 @@ export interface Config {
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
   effort?: string; // effort level: "low", "medium", "high", "max" (Claude only)
   budgetUsd?: number; // undefined = no budget limit
-  contextBudget: number; // total context budget in estimated tokens (default 200000; history target is half)
+  contextBudget: number; // total context budget in estimated tokens (default 50000; history target is half)
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
   endpointConfig?: EndpointConfig; // resolved endpoint config for current backend

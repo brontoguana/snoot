@@ -175,8 +175,8 @@ export function createContextStore(config: Config): ContextStore {
   }
 
   function needsCompaction(): boolean {
-    // Compact when conversation history exceeds 115% of the history budget
-    const threshold = historyBudget() * 1.15;
+    // Compact when conversation history exceeds 125% of the history budget
+    const threshold = historyBudget() * 1.25;
     return currentContextTokens() > threshold;
   }
 

@@ -921,7 +921,7 @@ Options:
   --backend <endpoint>  LLM endpoint to use (default: claude)
   --endpoint <endpoint> Same as --backend
   --budget <usd>        Max budget per message in USD (no limit by default)
-  --context-budget <n>  Context budget in tokens (default: 200000)
+  --context-budget <n>  Context budget in tokens (default: 50000)
   --fg                  Run in foreground instead of daemonizing
 
 Commands:
@@ -981,7 +981,7 @@ Commands:
   let mode: Mode = "coding";
   let backend: Backend = "claude";
   let budgetUsd: number | undefined = undefined;
-  let contextBudget = 200_000;
+  let contextBudget = 50_000;
   let foreground = false;
   let backendFromCli = false;
 
@@ -1007,7 +1007,7 @@ Commands:
         if (isNaN(budgetUsd)) budgetUsd = undefined;
         break;
       case "--context-budget":
-        contextBudget = parseInt(args[++i] ?? "200000", 10);
+        contextBudget = parseInt(args[++i] ?? "50000", 10);
         break;
       case "--fg":
         foreground = true;
