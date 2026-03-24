@@ -14,6 +14,22 @@ import { findCliPath, loadEndpoints, saveEndpoint, removeEndpoint, endpointDispl
 
 const IS_WINDOWS = process.platform === "win32";
 
+function backendEmoji(backend: string, ep?: EndpointConfig): string {
+  const cli = ep?.cli || backend;
+  if (cli === "claude" || backend === "claude") return "⚡";
+  if (cli === "gemini" || backend === "gemini") return "💎";
+  return "🌀";
+}
+
+function thinkingStatus(config: Config): string {
+  const emoji = backendEmoji(config.backend, config.endpointConfig);
+  const windowK = Math.round(config.contextBudget / 1000) + "k";
+  const parts = [emoji, windowK];
+  if (config.model) parts.push(config.model);
+  if (config.effort) parts.push(config.effort);
+  return parts.join(" · ");
+}
+
 function createLLM(config: Config): LLMManager {
   const ep = config.endpointConfig;
   if (ep?.type === "openai") {
@@ -48,9 +64,10 @@ export function createProxy(config: Config) {
 
   /** Persist backend/model/effort so they survive restarts */
   function saveSettings(): void {
-    const data: Record<string, string> = { backend: config.backend };
+    const data: Record<string, string | number> = { backend: config.backend };
     if (config.model) data.model = config.model;
     if (config.effort) data.effort = config.effort;
+    if (config.contextBudget) data.contextBudget = config.contextBudget;
     try { writeFileSync(settingsPath, JSON.stringify(data)); } catch {}
   }
 
@@ -236,7 +253,7 @@ export function createProxy(config: Config) {
   async function handleBtw(question: string): Promise<void> {
     watchLog(`💬 /btw: ${question.slice(0, 200)}`);
     try {
-      await sessionClient.send("💬 thinking...");
+      await sessionClient.send("💬 " + thinkingStatus(config));
     } catch {}
 
     // Spawn a throwaway LLM in research mode (read-only tools, no edits)
@@ -321,7 +338,7 @@ export function createProxy(config: Config) {
     console.log(`[proxy] Sending greeting...`);
     try {
       await sessionClient.send(
-        `✅ Snoot is online. Endpoint: ${config.backend}. Mode: ${config.mode}. Working dir: ${config.workDir}\nSend /help for commands.`
+        `✅ Snoot online\n${thinkingStatus(config)} · ${config.mode}\n${config.workDir}\nSend /help for commands.`
       );
       console.log(`[proxy] Greeting sent.`);
     } catch (err) {
@@ -778,6 +795,10 @@ export function createProxy(config: Config) {
         watchLog(`📦 Compacting context`);
         await context.compact();
       }
+      if (cmdResult.saveWindow) {
+        saveSettings();
+        watchLog(`📏 Context window → ${config.contextBudget}`);
+      }
     }
 
     try {
@@ -914,7 +935,7 @@ export function createProxy(config: Config) {
     const backendName = endpointDisplayName(config.backend);
     const thinkingTimer = setTimeout(async () => {
       if (llm.isAlive()) {
-        try { await sessionClient.send("💭 thinking..."); } catch {}
+        try { await sessionClient.send(thinkingStatus(config)); } catch {}
       }
     }, 5_000);
     // Flush accumulated chunks every 30s
