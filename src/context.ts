@@ -168,19 +168,25 @@ export function createContextStore(config: Config): ContextStore {
     return estimateTokens(chars);
   }
 
+  /** History budget is half the total context budget — leaves the other half for
+   *  system prompt, tool definitions, CLAUDE.md files, and the LLM's own working space. */
+  function historyBudget(): number {
+    return Math.floor(config.contextBudget / 2);
+  }
+
   function needsCompaction(): boolean {
-    // Compact when context exceeds 110% of budget
-    const threshold = config.contextBudget * 1.1;
+    // Compact when conversation history exceeds 115% of the history budget
+    const threshold = historyBudget() * 1.15;
     return currentContextTokens() > threshold;
   }
 
   async function compact(): Promise<void> {
-    const budget = config.contextBudget;
+    const hBudget = historyBudget();
     const current = currentContextTokens();
-    if (current <= budget) return;
+    if (current <= hBudget) return;
 
-    // Calculate how many tokens over budget we are
-    const excess = current - budget;
+    // Calculate how many tokens over the history budget we are
+    const excess = current - hBudget;
 
     // Find the oldest unpinned pairs that account for ~the excess
     const unpinned = recent.filter((p) => !p.pinned);
@@ -204,7 +210,7 @@ export function createContextStore(config: Config): ContextStore {
     // Build compaction prompt
     const compactionInput = formatForCompaction(toCompact, summary);
 
-    console.log(`[context] Compacting ${toCompact.length} pairs (~${accumulated} tokens excess of ${budget} budget)...`);
+    console.log(`[context] Compacting ${toCompact.length} pairs (~${accumulated} tokens excess of ${hBudget} history budget, ${config.contextBudget} total budget)...`);
 
     try {
       const newSummary = await runCompaction(compactionInput);
