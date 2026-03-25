@@ -35,13 +35,13 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Read",
-        description: "Read a file from the filesystem. Returns content with line numbers.",
+        description: "Read a file from the filesystem. Returns content with line numbers. Use this instead of Bash commands like cat/head/tail. For large files, use offset and limit to read specific sections rather than reading the entire file.",
         parameters: {
           type: "object",
           properties: {
             file_path: { type: "string", description: "Absolute path to the file to read" },
             offset: { type: "number", description: "Line number to start reading from (1-based)" },
-            limit: { type: "number", description: "Max number of lines to read" },
+            limit: { type: "number", description: "Max number of lines to read (default 2000)" },
           },
           required: ["file_path"],
         },
@@ -54,14 +54,19 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Grep",
-        description: "Search file contents with regex (uses ripgrep). Returns matching lines with file paths and line numbers.",
+        description: "Search file contents using regex (powered by ripgrep). Returns matching lines with file paths and line numbers. Use this instead of Bash grep/rg commands. Use the context parameters (-A, -B, -C) to see surrounding code — this avoids needing a separate Read call after finding a match. Use glob or type to narrow the search to specific file types.",
         parameters: {
           type: "object",
           properties: {
             pattern: { type: "string", description: "Regex pattern to search for" },
-            path: { type: "string", description: "File or directory to search in" },
-            glob: { type: "string", description: "Glob pattern to filter files (e.g. '*.ts')" },
-            type: { type: "string", description: "File type filter (e.g. 'ts', 'py')" },
+            path: { type: "string", description: "File or directory to search in (default: working directory)" },
+            glob: { type: "string", description: "Glob pattern to filter files (e.g. '*.ts', '*.{js,jsx}')" },
+            type: { type: "string", description: "File type filter (e.g. 'ts', 'py', 'rust', 'go')" },
+            context: { type: "number", description: "Show N lines before AND after each match (like grep -C)" },
+            before: { type: "number", description: "Show N lines before each match (like grep -B)" },
+            after: { type: "number", description: "Show N lines after each match (like grep -A)" },
+            max_count: { type: "number", description: "Max matches per file (default 100)" },
+            case_insensitive: { type: "boolean", description: "Case-insensitive search (default false)" },
           },
           required: ["pattern"],
         },
@@ -74,12 +79,12 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Glob",
-        description: "Find files matching a glob pattern. Returns file paths.",
+        description: "Find files matching a glob pattern. Returns file paths sorted by name. Use this instead of Bash find/ls commands. Use '**/' prefix to search recursively (e.g. '**/*.ts' finds all TypeScript files in all subdirectories).",
         parameters: {
           type: "object",
           properties: {
-            pattern: { type: "string", description: "Glob pattern (e.g. '**/*.ts', 'src/**/*.js')" },
-            path: { type: "string", description: "Directory to search in" },
+            pattern: { type: "string", description: "Glob pattern (e.g. '**/*.ts', 'src/**/*.js', '**/test_*.py')" },
+            path: { type: "string", description: "Directory to search in (default: working directory)" },
           },
           required: ["pattern"],
         },
@@ -92,12 +97,12 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Edit",
-        description: "Replace a specific string in a file. old_string must be unique in the file unless replace_all is true.",
+        description: "Replace a specific string in a file. The old_string must match exactly (including whitespace and indentation) and must be unique in the file unless replace_all is true. If old_string is not unique, include more surrounding context to make it unique. Always Read the file first to see the exact content before editing.",
         parameters: {
           type: "object",
           properties: {
             file_path: { type: "string", description: "Absolute path to the file" },
-            old_string: { type: "string", description: "The exact string to find and replace" },
+            old_string: { type: "string", description: "The exact string to find and replace (must match file content exactly)" },
             new_string: { type: "string", description: "The replacement string" },
             replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
           },
@@ -112,12 +117,12 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Write",
-        description: "Write content to a file, creating directories if needed. Overwrites existing files.",
+        description: "Write content to a file, creating directories if needed. Overwrites existing files completely. Use Edit for modifying existing files (it only sends the diff). Use Write only for new files or complete rewrites.",
         parameters: {
           type: "object",
           properties: {
             file_path: { type: "string", description: "Absolute path to the file" },
-            content: { type: "string", description: "The content to write" },
+            content: { type: "string", description: "The full content to write to the file" },
           },
           required: ["file_path", "content"],
         },
@@ -130,12 +135,13 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Bash",
-        description: "Execute a bash command and return its output (stdout + stderr).",
+        description: "Execute a bash command and return its output (stdout + stderr combined). Use this for running builds, tests, git commands, and system operations. Do NOT use bash for tasks that have dedicated tools: use Read instead of cat/head/tail, Edit instead of sed/awk, Grep instead of grep/rg, Glob instead of find. For long-running commands (builds, tests), set background=true to avoid blocking — you'll get back a handle to check on it later with 'cat /tmp/bg_<id>.out'.",
         parameters: {
           type: "object",
           properties: {
             command: { type: "string", description: "The bash command to execute" },
-            timeout: { type: "number", description: "Timeout in milliseconds (default 120000)" },
+            timeout: { type: "number", description: "Timeout in milliseconds (default 120000, max 600000)" },
+            background: { type: "boolean", description: "Run in background and return immediately with a result file path (default false)" },
           },
           required: ["command"],
         },
@@ -148,11 +154,12 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "WebFetch",
-        description: "Fetch content from a URL and return it as text. Uses a browser user agent.",
+        description: "Fetch a URL and return its content as clean readable text. HTML pages are automatically converted to text (scripts, styles, nav, and boilerplate are stripped). Use this to read documentation, API references, blog posts, etc. Will not work for pages that require authentication. For search, use WebSearch instead.",
         parameters: {
           type: "object",
           properties: {
-            url: { type: "string", description: "The URL to fetch" },
+            url: { type: "string", description: "The URL to fetch (must be fully-formed, e.g. https://...)" },
+            raw: { type: "boolean", description: "Return raw HTML instead of extracted text (default false)" },
           },
           required: ["url"],
         },
@@ -165,7 +172,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "WebSearch",
-        description: "Search the web using DuckDuckGo. Returns top results with titles, URLs, and snippets.",
+        description: "Search the web using DuckDuckGo. Returns top results with titles, URLs, and snippets. Use this for finding documentation, looking up error messages, checking current library versions, etc. Use WebFetch to read a specific result page after finding it.",
         parameters: {
           type: "object",
           properties: {
@@ -202,7 +209,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "ListDirectory",
-        description: "List files and directories at a given path. Returns names with type indicators (/ for directories) and file sizes.",
+        description: "List files and directories at a given path. Returns names with type indicators (/ for directories) and file sizes. Use this to explore project structure. For finding specific files by name pattern, use Glob instead.",
         parameters: {
           type: "object",
           properties: {
@@ -219,7 +226,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Patch",
-        description: "Apply multiple edits to a single file in one call. Each edit replaces old_string with new_string. Edits are applied sequentially. Each old_string must be unique in the file at the time it is applied.",
+        description: "Apply multiple edits to a single file in one call. More efficient than multiple Edit calls when making several changes to the same file. Edits are applied sequentially — each old_string must be unique in the file at the time it is applied. Later edits see the result of earlier edits.",
         parameters: {
           type: "object",
           properties: {
@@ -230,7 +237,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
               items: {
                 type: "object",
                 properties: {
-                  old_string: { type: "string", description: "The exact string to find" },
+                  old_string: { type: "string", description: "The exact string to find (must match exactly)" },
                   new_string: { type: "string", description: "The replacement string" },
                 },
                 required: ["old_string", "new_string"],
@@ -330,8 +337,25 @@ async function toolWrite(args: any, workDir: string): Promise<string> {
   return "OK";
 }
 
+let bgJobCounter = 0;
+
 async function toolBash(args: any, workDir: string): Promise<string> {
-  const timeout = args.timeout || 120_000;
+  const timeout = Math.min(args.timeout || 120_000, 600_000);
+
+  if (args.background) {
+    const jobId = ++bgJobCounter;
+    const outFile = `/tmp/bg_${jobId}.out`;
+    const statusFile = `/tmp/bg_${jobId}.status`;
+    // Run in background: redirect output to file, write exit code to status file
+    const wrappedCmd = `(${args.command}) > "${outFile}" 2>&1; echo $? > "${statusFile}"`;
+    Bun.spawn(["bash", "-c", wrappedCmd], {
+      cwd: workDir,
+      env: process.env,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return `Background job #${jobId} started.\nOutput: cat ${outFile}\nStatus: cat ${statusFile} (file appears when command finishes)`;
+  }
+
   const result = Bun.spawnSync(["bash", "-c", args.command], {
     cwd: workDir,
     timeout,
@@ -350,9 +374,18 @@ async function toolBash(args: any, workDir: string): Promise<string> {
 }
 
 async function toolGrep(args: any, workDir: string): Promise<string> {
-  const rgArgs = ["rg", "--no-heading", "-n", "--max-count", "100"];
+  const maxCount = args.max_count || 100;
+  const rgArgs = ["rg", "--no-heading", "-n", "--max-count", String(maxCount)];
+  if (args.case_insensitive) rgArgs.push("-i");
   if (args.glob) rgArgs.push("--glob", args.glob);
   if (args.type) rgArgs.push("--type", args.type);
+  // Context lines: -C takes precedence, then individual -A/-B
+  if (args.context) {
+    rgArgs.push("-C", String(args.context));
+  } else {
+    if (args.before) rgArgs.push("-B", String(args.before));
+    if (args.after) rgArgs.push("-A", String(args.after));
+  }
   rgArgs.push(args.pattern);
   if (args.path) rgArgs.push(args.path);
 
@@ -453,14 +486,87 @@ async function toolWebFetch(args: any): Promise<string> {
         "Accept-Language": "en-US,en;q=0.9",
       },
     });
-    const text = await resp.text();
+    let text = await resp.text();
+    const contentType = resp.headers.get("content-type") || "";
+
+    // Convert HTML to readable text unless raw mode requested
+    if (!args.raw && (contentType.includes("text/html") || contentType.includes("xhtml") || text.trimStart().startsWith("<"))) {
+      text = htmlToText(text);
+    }
+
     if (text.length > 50_000) {
       return text.slice(0, 50_000) + "\n... (truncated)";
     }
-    return text;
+    return text || "(empty response)";
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** Convert HTML to clean readable text, stripping boilerplate */
+function htmlToText(html: string): string {
+  // Remove entire blocks that are noise
+  let text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+    .replace(/<header[\s\S]*?<\/header>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+
+  // Convert structural elements to line breaks
+  text = text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(p|div|section|article|main|aside|blockquote|figure|figcaption|details|summary)[^>]*>/gi, "\n")
+    .replace(/<\/?(h[1-6])[^>]*>/gi, "\n")
+    .replace(/<\/?li[^>]*>/gi, "\n")
+    .replace(/<\/?tr[^>]*>/gi, "\n")
+    .replace(/<\/?td[^>]*>/gi, "\t")
+    .replace(/<\/?th[^>]*>/gi, "\t")
+    .replace(/<\/?(ul|ol|table|thead|tbody|tfoot)[^>]*>/gi, "\n");
+
+  // Convert links: <a href="url">text</a> → text (url)
+  text = text.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
+    const linkText = inner.replace(/<[^>]*>/g, "").trim();
+    const cleanHref = href.startsWith("/") || href.startsWith("http") ? href : "";
+    return cleanHref && cleanHref !== linkText ? `${linkText} (${cleanHref})` : linkText;
+  });
+
+  // Convert code blocks
+  text = text.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, inner) => {
+    return "\n```\n" + inner.replace(/<[^>]*>/g, "") + "\n```\n";
+  });
+  text = text.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, inner) => {
+    return "`" + inner.replace(/<[^>]*>/g, "") + "`";
+  });
+
+  // Strip all remaining tags
+  text = text.replace(/<[^>]*>/g, "");
+
+  // Decode HTML entities
+  text = text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)));
+
+  // Clean up whitespace: collapse blank lines, trim trailing spaces
+  text = text
+    .split("\n")
+    .map(line => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text;
 }
 
 async function toolWebSearch(args: any): Promise<string> {
@@ -686,7 +792,7 @@ export function createOpenAIManager(config: Config): LLMManager {
     tools: ToolDef[],
     signal: AbortSignal,
   ): Promise<TurnResult> {
-    const body: any = { model, messages, stream: true };
+    const body: any = { model, messages, stream: true, max_tokens: 24576 };
     if (tools.length > 0) body.tools = tools;
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -803,6 +909,9 @@ export function createOpenAIManager(config: Config): LLMManager {
       }
 
       // No tool calls — final response
+      if (result.finishReason === "length") {
+        accumulatedText += "\n\n⚠️ Response was truncated (hit output token limit). You may want to ask me to continue, or switch to a model with higher output capacity.";
+      }
       return accumulatedText;
     }
 
