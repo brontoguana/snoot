@@ -2,17 +2,38 @@ import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // @ts-ignore — Bun embed: returns a $bunfs path at runtime in compiled binaries
 import resvgWasmPath from "../node_modules/@resvg/resvg-wasm/index_bg.wasm" with { type: "file" };
 import { readFile, unlink } from "fs/promises";
+import { readFileSync, existsSync } from "fs";
 
 const AVATAR_SIZE = 256;
 const INLINE_SVG_WIDTH = 800;
 
 let wasmInitialized = false;
+let fontBuffers: Uint8Array[] = [];
+
+/** Try to load system fonts for SVG text rendering */
+function loadSystemFonts(): Uint8Array[] {
+  const fontPaths = [
+    // Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    // macOS
+    "/System/Library/Fonts/Helvetica.ttc",
+  ];
+  const bufs: Uint8Array[] = [];
+  for (const p of fontPaths) {
+    try {
+      if (existsSync(p)) bufs.push(readFileSync(p));
+    } catch {}
+  }
+  return bufs;
+}
 
 /** Initialize the WASM module — must be called before any SVG rendering */
 export async function initResvg(): Promise<void> {
   if (wasmInitialized) return;
   const wasmBytes = await Bun.file(resvgWasmPath).arrayBuffer();
   await initWasm(wasmBytes);
+  fontBuffers = loadSystemFonts();
   wasmInitialized = true;
 }
 
@@ -39,6 +60,7 @@ export async function convertAvatarSvg(svgPath: string): Promise<Uint8Array> {
 
   const resvg = new Resvg(svg, {
     fitTo: { mode: "width", value: AVATAR_SIZE },
+    font: fontBuffers.length ? { fontBuffers, defaultFontFamily: "DejaVu Sans" } : undefined,
   });
   const png = resvg.render().asPng();
 
@@ -61,6 +83,7 @@ function sanitizeSvg(svg: string): string {
 export function svgToPng(svg: string): Uint8Array {
   const resvg = new Resvg(sanitizeSvg(svg), {
     fitTo: { mode: "width", value: INLINE_SVG_WIDTH },
+    font: fontBuffers.length ? { fontBuffers, defaultFontFamily: "DejaVu Sans" } : undefined,
   });
   return resvg.render().asPng();
 }
