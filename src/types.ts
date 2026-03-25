@@ -111,14 +111,16 @@ export interface LLMStatus {
 
 export interface LLMManager {
   isAlive(): boolean;
+  isPendingRetry(): boolean;
+  cancelRetry(): void;
   send(text: string, promptFile?: string): void;
   waitForResponse(): Promise<string>;
   kill(): Promise<void>;
   forceKill(): void; // synchronous SIGKILL — for use in SIGTERM handlers
   onExit(cb: () => void): void;
   onChunk(cb: (text: string) => void): void;
-  onRateLimit(cb: (retryIn: number, attempt: number) => void): void;
-  onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void;
+  onRateLimit(cb: (retryIn: number, attempt: number, reason?: string) => void): void;
+  onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number, reason?: string) => void): void;
   onActivity(cb: (line: string) => void): void;
   onToolUse(cb: (detail: string) => void): void;
   onModel(cb: (model: string) => void): void;

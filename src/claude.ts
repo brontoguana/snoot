@@ -95,7 +95,7 @@ export function createClaudeManager(config: Config): LLMManager {
         case "system": {
           const raw = JSON.stringify(json).toLowerCase();
           if (raw.includes("rate") || raw.includes("limit") || raw.includes("throttl") || raw.includes("429") || raw.includes("overloaded")) {
-            events.push({ kind: "rate_limit" });
+            events.push({ kind: "rate_limit", reason: JSON.stringify(json).slice(0, 200) });
             events.push({ kind: "log", message: `Rate limit detected: ${JSON.stringify(json).slice(0, 200)}` });
           } else {
             events.push({ kind: "log", message: `System message: ${JSON.stringify(json).slice(0, 200)}` });
@@ -103,7 +103,7 @@ export function createClaudeManager(config: Config): LLMManager {
           break;
         }
         case "rate_limit_event":
-          events.push({ kind: "rate_limit" });
+          events.push({ kind: "rate_limit", reason: json.message || "rate limited" });
           events.push({ kind: "log", message: `Rate limit event: ${JSON.stringify(json).slice(0, 300)}` });
           break;
         case "result":

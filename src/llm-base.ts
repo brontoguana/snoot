@@ -7,7 +7,7 @@ const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
 export type OutputEvent =
   | { kind: "text"; text: string }
   | { kind: "tool_use"; detail: string; trackingDetail?: string }
-  | { kind: "rate_limit" }
+  | { kind: "rate_limit"; reason?: string }
   | { kind: "result"; text: string }
   | { kind: "log"; message: string }
   | { kind: "model"; model: string };
@@ -28,8 +28,8 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
   let alive = false;
   const exitCallbacks: Array<() => void> = [];
   const chunkCallbacks: Array<(text: string) => void> = [];
-  const rateLimitCallbacks: Array<(retryIn: number, attempt: number) => void> = [];
-  const apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
+  const rateLimitCallbacks: Array<(retryIn: number, attempt: number, reason?: string) => void> = [];
+  const apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number, reason?: string) => void> = [];
   const activityCallbacks: Array<(line: string) => void> = [];
   const toolUseCallbacks: Array<(detail: string) => void> = [];
   const modelCallbacks: Array<(model: string) => void> = [];
@@ -42,11 +42,13 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
   let spawnedAt: number | null = null;
   let lastActivityAt: number | null = null;
   let rateLimitDetected = false;
+  let rateLimitReason: string | undefined;
   let lastUserMessage = "";
   let lastPromptFile: string | undefined;
   let rateLimitRetryCount = 0;
   let apiErrorRetryCount = 0;
   let pendingRetry = false;
+  let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   const spawnedPids = new Set<number>();
   const { label } = hooks;
@@ -277,6 +279,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
           break;
         case "rate_limit":
           rateLimitDetected = true;
+          rateLimitReason = event.reason;
           break;
         case "log":
           console.log(`[${label}] ${event.message}`);
@@ -299,16 +302,19 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     // Rate limit retry: empty result + rate limit detected + retries left
     if (!responseText && rateLimitDetected && rateLimitRetryCount < MAX_RATE_LIMIT_RETRIES && lastUserMessage) {
       rateLimitRetryCount++;
+      const reason = rateLimitReason;
       rateLimitDetected = false;
+      rateLimitReason = undefined;
       pendingRetry = true;
-      console.log(`[${label}] Rate limited — retrying in ${RATE_LIMIT_RETRY_DELAY / 1000}s (attempt ${rateLimitRetryCount}/${MAX_RATE_LIMIT_RETRIES})`);
+      console.log(`[${label}] Rate limited — retrying in ${RATE_LIMIT_RETRY_DELAY / 1000}s (attempt ${rateLimitRetryCount}/${MAX_RATE_LIMIT_RETRIES})${reason ? ` [${reason}]` : ""}`);
 
       for (const cb of rateLimitCallbacks) {
-        cb(RATE_LIMIT_RETRY_DELAY / 1000, rateLimitRetryCount);
+        cb(RATE_LIMIT_RETRY_DELAY / 1000, rateLimitRetryCount, reason);
       }
 
-      setTimeout(() => {
+      pendingRetryTimer = setTimeout(() => {
         pendingRetry = false;
+        pendingRetryTimer = null;
         forceKill();
         console.log(`[${label}] Resending after rate limit (attempt ${rateLimitRetryCount}) — spawning new process`);
         spawnProcess(lastUserMessage, lastPromptFile);
@@ -324,11 +330,12 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
       console.log(`[${label}] API error — retrying in ${delay / 1000}s (attempt ${apiErrorRetryCount}/${API_ERROR_RETRY_DELAYS.length})`);
 
       for (const cb of apiErrorCallbacks) {
-        cb(delay / 1000, apiErrorRetryCount, API_ERROR_RETRY_DELAYS.length);
+        cb(delay / 1000, apiErrorRetryCount, API_ERROR_RETRY_DELAYS.length, responseText);
       }
 
-      setTimeout(() => {
+      pendingRetryTimer = setTimeout(() => {
         pendingRetry = false;
+        pendingRetryTimer = null;
         forceKill();
         console.log(`[${label}] Resending after API error (attempt ${apiErrorRetryCount}) — spawning new process`);
         spawnProcess(lastUserMessage, lastPromptFile);
@@ -341,7 +348,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
       console.log(`[${label}] API error — retries exhausted, giving up`);
       apiErrorRetryCount = 0;
       const resolver = responseResolvers.shift();
-      if (resolver) resolver.resolve("[API error — retried but still failing. Try again later.]");
+      if (resolver) resolver.resolve("[API error — retried but still failing. Try /model to switch models or try again later.]");
       return;
     }
 
@@ -361,6 +368,31 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
 
   function isAlive(): boolean {
     return alive;
+  }
+
+  function isPendingRetry(): boolean {
+    return pendingRetry;
+  }
+
+  function cancelRetry(): void {
+    if (!pendingRetry) return;
+    if (pendingRetryTimer) {
+      clearTimeout(pendingRetryTimer);
+      pendingRetryTimer = null;
+    }
+    pendingRetry = false;
+    rateLimitRetryCount = 0;
+    apiErrorRetryCount = 0;
+    console.log(`[${label}] Retry cancelled`);
+
+    const pending = responseResolvers;
+    responseResolvers = [];
+    for (const { resolve } of pending) {
+      resolve("");
+    }
+    accumulatedText = "";
+
+    for (const cb of exitCallbacks) cb();
   }
 
   /** Synchronous SIGKILL — for use in SIGTERM/SIGINT handlers */
@@ -440,11 +472,11 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     chunkCallbacks.push(cb);
   }
 
-  function onRateLimit(cb: (retryIn: number, attempt: number) => void): void {
+  function onRateLimit(cb: (retryIn: number, attempt: number, reason?: string) => void): void {
     rateLimitCallbacks.push(cb);
   }
 
-  function onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void {
+  function onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number, reason?: string) => void): void {
     apiErrorCallbacks.push(cb);
   }
 
@@ -470,5 +502,5 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, forceKill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, onModel, getStatus };
+  return { isAlive, isPendingRetry, cancelRetry, send, waitForResponse, kill, forceKill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, onModel, getStatus };
 }

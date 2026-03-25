@@ -854,6 +854,8 @@ export function createOpenAIManager(config: Config): LLMManager {
   }
 
   function isAlive(): boolean { return alive; }
+  function isPendingRetry(): boolean { return false; }
+  function cancelRetry(): void {}
 
   async function kill(): Promise<void> {
     if (abortController) abortController.abort();
@@ -877,6 +879,8 @@ export function createOpenAIManager(config: Config): LLMManager {
 
   return {
     isAlive,
+    isPendingRetry,
+    cancelRetry,
     send,
     waitForResponse,
     kill,

@@ -129,18 +129,22 @@ export function createProxy(config: Config) {
   }
 
   function wireLLMCallbacks(): void {
-    llm.onRateLimit(async (retryIn, attempt) => {
-      watchLog(`⏳ Rate limited — retrying in ${retryIn}s (attempt ${attempt}/5)`);
+    llm.onRateLimit(async (retryIn, attempt, reason) => {
+      const reasonShort = reason ? reason.slice(0, 120) : "rate limited";
+      const msg = `⏳ ${reasonShort}\nRetrying in ${retryIn}s (attempt ${attempt}/5)\nSend /stop to cancel or /model to switch models`;
+      watchLog(msg);
       try {
-        await sessionClient.send(`⏳ Rate limited — retrying in ${retryIn}s (attempt ${attempt}/5)`);
+        await sessionClient.send(msg);
       } catch {}
     });
 
-    llm.onApiError(async (retryIn, attempt, maxAttempts) => {
-      watchLog(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
+    llm.onApiError(async (retryIn, attempt, maxAttempts, reason) => {
+      const reasonShort = reason ? reason.slice(0, 120) : "API error";
+      const msg = `⚠️ ${reasonShort}\nRetrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})\nSend /stop to cancel or /model to switch models`;
+      watchLog(msg);
       try {
         if (attempt <= maxAttempts) {
-          await sessionClient.send(`⚠️ API error (500) — retrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})`);
+          await sessionClient.send(msg);
         }
       } catch {}
     });

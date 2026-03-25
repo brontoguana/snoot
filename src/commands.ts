@@ -361,6 +361,10 @@ export function handleCommand(
 
     case "/stop":
     case "/kill":
+      if (llm.isPendingRetry()) {
+        llm.cancelRetry();
+        return { response: "Retry cancelled." };
+      }
       if (!llm.isAlive()) {
         return { response: "Nothing to cancel — idle." };
       }

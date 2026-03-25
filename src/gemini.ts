@@ -88,8 +88,8 @@ export function createGeminiManager(config: Config): LLMManager {
           const message = (json.message as string) || "";
           const severity = (json.severity as string) || "error";
           const lower = message.toLowerCase();
-          if (lower.includes("rate") || lower.includes("limit") || lower.includes("quota") || lower.includes("429")) {
-            events.push({ kind: "rate_limit" });
+          if (lower.includes("rate") || lower.includes("limit") || lower.includes("quota") || lower.includes("429") || lower.includes("capacity") || lower.includes("exhausted")) {
+            events.push({ kind: "rate_limit", reason: message });
           }
           events.push({ kind: "log", message: `Error (${severity}): ${message}` });
           break;

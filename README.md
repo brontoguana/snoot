@@ -11,6 +11,14 @@ Messages flow: **Messenger app** → **Snoot proxy** → **Claude/Gemini process
   </tr>
 </table>
 
+## LLM as a Commodity
+
+Snoot decouples conversation state from the AI backend. All context — conversation history, rolling summaries, pins, recent activity, project knowledge — lives in Snoot's own storage, not inside any model's context window. The LLM is a stateless execution engine that Snoot spins up, feeds context to, and discards.
+
+This means you can switch between Claude, Gemini, Codex, or any OpenAI-compatible model mid-conversation with zero loss of context, knowledge, or continuity. `/claude` → `/gemini` → `/codex` — the AI changes, but the conversation doesn't. There is no vendor lock-in at the intelligence layer.
+
+Most tools bind your conversation history and context to a single provider. Switch, and you start from scratch. Snoot inverts that: the context belongs to you, and the model is interchangeable.
+
 ## How It Works
 
 Snoot uses an ephemeral per-message model — each message (or batch of rapid messages) spawns a fresh AI process, gets a response, and exits. The proxy owns all conversation state and manages context compaction between requests.
