@@ -352,15 +352,24 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
       return;
     }
 
+    // If we got text but also hit a rate limit, the response is likely truncated
+    let finalText = responseText;
+    if (responseText && rateLimitDetected) {
+      const reason = rateLimitReason || "rate limit";
+      console.log(`[${label}] Response truncated by ${reason} (${responseText.length} chars received)`);
+      finalText += `\n\n⚠️ Response may be incomplete — hit ${reason}. Send /model to switch models or resend your message to continue.`;
+    }
+
     rateLimitDetected = false;
+    rateLimitReason = undefined;
     rateLimitRetryCount = 0;
     apiErrorRetryCount = 0;
 
-    console.log(`[${label}] Result received (${responseText.length} chars), resolvers waiting: ${responseResolvers.length}`);
-    emitActivity(`✅ Done (${responseText.length} chars)`);
+    console.log(`[${label}] Result received (${finalText.length} chars), resolvers waiting: ${responseResolvers.length}`);
+    emitActivity(`✅ Done (${finalText.length} chars)`);
     const resolver = responseResolvers.shift();
     if (resolver) {
-      resolver.resolve(responseText);
+      resolver.resolve(finalText);
     }
   }
 
