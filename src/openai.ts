@@ -887,6 +887,7 @@ export function createOpenAIManager(config: Config): LLMManager {
     onApiError: (cb) => apiErrorCallbacks.push(cb),
     onActivity: (cb) => activityCallbacks.push(cb),
     onToolUse: (cb) => toolUseCallbacks.push(cb),
+    onModel: () => {},
     getStatus,
   };
 }

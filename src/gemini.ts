@@ -99,6 +99,7 @@ export function createGeminiManager(config: Config): LLMManager {
           events.push({ kind: "result", text: "" });
           break;
         case "init":
+          if (json.model) events.push({ kind: "model", model: json.model });
           events.push({ kind: "log", message: `Session initialized: model=${json.model}` });
           break;
         case "tool_use":

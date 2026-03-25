@@ -48,9 +48,18 @@ export async function convertAvatarSvg(svgPath: string): Promise<Uint8Array> {
   return png;
 }
 
+/** Sanitize SVG for resvg: fix unescaped &, strip unsupported foreignObject */
+function sanitizeSvg(svg: string): string {
+  // Fix unescaped & (not already part of &amp; &lt; &gt; &quot; &apos; &#NNN; &#xHHH;)
+  let s = svg.replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, "&amp;");
+  // Strip <foreignObject>...</foreignObject> blocks (resvg can't render them)
+  s = s.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
+  return s;
+}
+
 /** Convert an inline SVG string to PNG bytes */
 export function svgToPng(svg: string): Uint8Array {
-  const resvg = new Resvg(svg, {
+  const resvg = new Resvg(sanitizeSvg(svg), {
     fitTo: { mode: "width", value: INLINE_SVG_WIDTH },
   });
   return resvg.render().asPng();

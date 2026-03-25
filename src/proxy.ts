@@ -167,6 +167,13 @@ export function createProxy(config: Config) {
       }
     });
 
+    llm.onModel((model) => {
+      if (!config.model) {
+        config.model = model;
+        watchLog(`Model detected: ${model}`);
+      }
+    });
+
     llm.onExit(async () => {
       if (shuttingDown) return;
       // If we're not currently processing a message, this is an unexpected exit

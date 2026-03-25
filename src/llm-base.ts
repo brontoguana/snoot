@@ -9,7 +9,8 @@ export type OutputEvent =
   | { kind: "tool_use"; detail: string; trackingDetail?: string }
   | { kind: "rate_limit" }
   | { kind: "result"; text: string }
-  | { kind: "log"; message: string };
+  | { kind: "log"; message: string }
+  | { kind: "model"; model: string };
 
 export interface BackendHooks {
   label: string;
@@ -31,6 +32,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
   const apiErrorCallbacks: Array<(retryIn: number, attempt: number, maxAttempts: number) => void> = [];
   const activityCallbacks: Array<(line: string) => void> = [];
   const toolUseCallbacks: Array<(detail: string) => void> = [];
+  const modelCallbacks: Array<(model: string) => void> = [];
   let responseResolvers: Array<{
     resolve: (text: string) => void;
     reject: (err: Error) => void;
@@ -279,6 +281,9 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
         case "log":
           console.log(`[${label}] ${event.message}`);
           break;
+        case "model":
+          for (const cb of modelCallbacks) cb(event.model);
+          break;
         case "result":
           handleResult(event.text);
           break;
@@ -451,6 +456,10 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     toolUseCallbacks.push(cb);
   }
 
+  function onModel(cb: (model: string) => void): void {
+    modelCallbacks.push(cb);
+  }
+
   function getStatus(): LLMStatus {
     return {
       alive,
@@ -461,5 +470,5 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     };
   }
 
-  return { isAlive, send, waitForResponse, kill, forceKill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, getStatus };
+  return { isAlive, send, waitForResponse, kill, forceKill, onExit, onChunk, onRateLimit, onApiError, onActivity, onToolUse, onModel, getStatus };
 }

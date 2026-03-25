@@ -121,6 +121,7 @@ export interface LLMManager {
   onApiError(cb: (retryIn: number, attempt: number, maxAttempts: number) => void): void;
   onActivity(cb: (line: string) => void): void;
   onToolUse(cb: (detail: string) => void): void;
+  onModel(cb: (model: string) => void): void;
   getStatus(): LLMStatus;
 }
 
