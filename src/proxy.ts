@@ -26,7 +26,10 @@ function backendEmoji(backend: string, ep?: EndpointConfig): string {
 function thinkingStatus(config: Config): string {
   const emoji = backendEmoji(config.backend, config.endpointConfig);
   const parts = [emoji, `${config.windowSize}msg`];
-  if (config.model) parts.push(config.model);
+  if (config.model) {
+    const display = config.model.replace(/^gemini-/i, "");
+    parts.push(display);
+  }
   if (config.effort) parts.push(config.effort);
   return parts.join(" · ");
 }
@@ -953,9 +956,19 @@ export function createProxy(config: Config) {
     try {
       const entries = chunkBuffer.splice(0);
 
+      // Merge consecutive text entries so inline SVGs aren't fragmented across chunks
+      const merged: typeof entries = [];
+      for (const entry of entries) {
+        if (entry.type === "text" && merged.length > 0 && merged[merged.length - 1].type === "text") {
+          merged[merged.length - 1].content += entry.content;
+        } else {
+          merged.push({ ...entry });
+        }
+      }
+
       // Group entries: each text entry starts a new message group, tools append to current group
       const groups: string[][] = [];
-      for (const entry of entries) {
+      for (const entry of merged) {
         if (entry.type === "text") {
           groups.push([entry.content]);
           textCharsSent += entry.content.length;
