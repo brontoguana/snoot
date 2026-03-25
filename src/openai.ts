@@ -866,6 +866,16 @@ export function createOpenAIManager(config: Config): LLMManager {
       accumulatedText += result.content;
       lastActivityAt = Date.now();
 
+      // Log finish_reason for diagnostics
+      if (result.finishReason) {
+        console.log(`[${label}] Turn ${turns}/${MAX_TURNS} finish_reason: ${result.finishReason}, toolCalls: ${result.toolCalls.length}, text: ${result.content.length} chars`);
+      }
+
+      // If finish_reason is "length" but we got tool calls, they may be truncated/incomplete
+      if (result.finishReason === "length" && result.toolCalls.length > 0) {
+        console.error(`[${label}] WARNING: tool-calling turn truncated by token limit — tool calls may be incomplete`);
+      }
+
       // If there are tool calls, execute them and loop
       if (result.toolCalls.length > 0) {
         const assistantMsg: any = {
@@ -905,6 +915,15 @@ export function createOpenAIManager(config: Config): LLMManager {
           });
         }
 
+        continue;
+      }
+
+      // No tool calls but finish_reason is "length" — model wanted to call tools but got truncated
+      if (result.finishReason === "length" && !result.content.trim()) {
+        console.error(`[${label}] Empty response with finish_reason=length — likely truncated tool call, retrying turn`);
+        // Push a system message asking the model to continue with shorter output
+        messages.push({ role: "assistant", content: result.content || "" });
+        messages.push({ role: "user", content: "Your previous response was truncated. Please continue — try to use fewer tool calls per turn if needed." });
         continue;
       }
 
