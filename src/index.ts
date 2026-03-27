@@ -39,7 +39,12 @@ if (IS_WINDOWS) {
     resolve(homedir(), ".bun", "bin"),                 // bun global bin
   );
 } else {
-  EXTRA_PATH_DIRS.push(resolve(homedir(), ".local", "bin"));
+  EXTRA_PATH_DIRS.push(
+    resolve(homedir(), ".local", "bin"),
+    "/opt/homebrew/bin",        // macOS Homebrew (Apple Silicon)
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",           // macOS Homebrew (Intel) / common CLI location
+  );
 }
 const currentPath = process.env.PATH?.split(PATH_DELIMITER) || [];
 for (const dir of EXTRA_PATH_DIRS) {
