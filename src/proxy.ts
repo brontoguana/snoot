@@ -60,6 +60,7 @@ export function createProxy(config: Config) {
   let chunkBuffer: BufferEntry[] = [];
   let textCharsSent = 0;
   let contextTrace: string[] = []; // full trace for context: text + tool-use interleaved
+  let svgCarryover = ""; // holds incomplete SVG text between flush intervals
   const FLUSH_INTERVAL = 30_000;
 
   const avatarSvgPath = join(config.baseDir, "avatar.svg");
@@ -954,18 +955,31 @@ export function createProxy(config: Config) {
   /** Promise that resolves when any in-progress flush completes */
   let flushInProgress: Promise<void> = Promise.resolve();
 
-  /** Flush chunk buffer: group entries into messages (each starts with text, followed by tool calls) */
-  async function flushChunkBuffer(): Promise<void> {
+  /** Flush chunk buffer: group entries into messages (each starts with text, followed by tool calls).
+   *  @param final — if true, flush everything including incomplete SVGs held in carryover */
+  async function flushChunkBuffer(final = false): Promise<void> {
     // Chain flushes so concurrent calls are serialized
     const previous = flushInProgress;
     let resolve!: () => void;
     flushInProgress = new Promise<void>((r) => { resolve = r; });
     // Wait for previous flush, but don't wait forever (prevents deadlock if prior flush hung)
     await Promise.race([previous, new Promise<void>(r => setTimeout(r, 60_000))]);
-    if (chunkBuffer.length === 0) { resolve(); return; }
+    if (chunkBuffer.length === 0 && !svgCarryover) { resolve(); return; }
 
     try {
       const entries = chunkBuffer.splice(0);
+
+      // Prepend any SVG carryover from a previous flush to the first text entry
+      if (svgCarryover) {
+        const firstTextIdx = entries.findIndex(e => e.type === "text");
+        if (firstTextIdx >= 0) {
+          entries[firstTextIdx] = { type: "text", content: svgCarryover + entries[firstTextIdx].content };
+        } else {
+          // No text entries — create one from the carryover
+          entries.unshift({ type: "text", content: svgCarryover });
+        }
+        svgCarryover = "";
+      }
 
       // Merge consecutive text entries so inline SVGs aren't fragmented across chunks
       const merged: typeof entries = [];
@@ -987,6 +1001,21 @@ export function createProxy(config: Config) {
           // Tool call — append to last group, or create new one if none exists
           if (groups.length === 0) groups.push([]);
           groups[groups.length - 1].push(entry.content);
+        }
+      }
+
+      // If not the final flush, check if the last text group has an unclosed SVG.
+      // If so, hold it back so it can be completed in the next flush.
+      if (!final && groups.length > 0) {
+        const lastGroup = groups[groups.length - 1];
+        const fullText = lastGroup.join("\n");
+        const svgOpens = (fullText.match(/<svg[\s>]/g) || []).length;
+        const svgCloses = (fullText.match(/<\/svg>/g) || []).length;
+        if (svgOpens > svgCloses) {
+          // Incomplete SVG — pull the entire group back into carryover
+          svgCarryover = fullText;
+          textCharsSent -= lastGroup.filter(l => !l.startsWith("🔧")).join("").length;
+          groups.pop();
         }
       }
 
@@ -1042,6 +1071,7 @@ export function createProxy(config: Config) {
     chunkBuffer = [];
     contextTrace = [];
     textCharsSent = 0;
+    svgCarryover = "";
     llm.send(text, promptFile);
 
     // Send "thinking" indicators
@@ -1067,8 +1097,8 @@ export function createProxy(config: Config) {
     // sends can't hang forever.  Wrap the whole block in try/catch so a send
     // failure doesn't leave `processing` stuck.
     try {
-      // Flush any remaining entries in the buffer
-      await flushChunkBuffer();
+      // Flush any remaining entries in the buffer (final=true to send incomplete SVGs too)
+      await flushChunkBuffer(true);
 
       // Empty response — tell the user (only if nothing was streamed)
       if (!response && textCharsSent === 0 && chunkBuffer.length === 0) {
