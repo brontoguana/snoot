@@ -10,8 +10,12 @@ echo
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
-if [ "$ARCH" != "x86_64" ] || [ "$OS" != "linux" ]; then
-  echo "This installer is for Linux x86_64."
+if [ "$OS" = "darwin" ] && ([ "$ARCH" = "arm64" ] || [ "$ARCH" = "x86_64" ]); then
+  BINARY="snoot-macos-arm64"
+elif [ "$OS" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
+  BINARY="snoot-linux-x64"
+else
+  echo "This installer supports Linux x86_64 and macOS ARM64."
   echo ""
   echo "For Windows, use PowerShell:"
   echo "  irm https://raw.githubusercontent.com/brontoguana/snoot/main/install.ps1 | iex"
@@ -24,7 +28,7 @@ fi
 
 # Download latest release
 echo "Downloading latest release..."
-DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/snoot-linux-x64"
+DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$BINARY"
 mkdir -p "$HOME/.local/bin"
 curl -fsSL -o "$HOME/.local/bin/snoot" "$DOWNLOAD_URL"
 chmod +x "$HOME/.local/bin/snoot"
