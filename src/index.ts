@@ -923,7 +923,7 @@ async function parseArgs(): Promise<Config & { foreground: boolean }> {
 Options:
   --user <id>           User ID (overrides saved — Session hex or Matrix @user:server)
   --mode <mode>         Tool mode: chat, research, coding (default: coding)
-  --backend <endpoint>  LLM endpoint to use (default: claude)
+  --backend <endpoint>  LLM endpoint to use (default: first available)
   --endpoint <endpoint> Same as --backend
   --budget <usd>        Max budget per message in USD (no limit by default)
   --window <n>          Conversation window size in messages (default: 20)
@@ -1004,7 +1004,7 @@ Commands:
         break;
       case "--backend":
       case "--endpoint":
-        backend = args[++i] ?? "claude";
+        backend = args[++i] ?? "claude";  // default if --backend given with no value
         backendFromCli = true;
         break;
       case "--budget":
@@ -1109,7 +1109,19 @@ Commands:
 
   // Resolve endpoint config
   const endpoints = loadEndpoints();
-  const endpointConfig = endpoints[backend];
+  let endpointConfig = endpoints[backend];
+
+  // If the default backend isn't available and user didn't explicitly request it,
+  // fall back to the first available endpoint
+  if (!endpointConfig && !backendFromCli) {
+    const available = Object.keys(endpoints);
+    if (available.length > 0) {
+      backend = available[0] as Backend;
+      endpointConfig = endpoints[backend];
+      console.log(`[snoot] claude not found, using ${backend} instead`);
+    }
+  }
+
   if (!endpointConfig) {
     const available = Object.keys(endpoints);
     if (available.length > 0) {

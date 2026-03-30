@@ -6,6 +6,14 @@ REPO="brontoguana/snoot"
 echo "Installing Snoot..."
 echo
 
+# Show current version if installed
+if command -v snoot &>/dev/null; then
+  CURRENT_VERSION=$(snoot --version 2>/dev/null || echo "unknown")
+  echo "Current version: $CURRENT_VERSION"
+else
+  echo "No existing installation found"
+fi
+
 # Detect platform
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -26,21 +34,31 @@ else
   exit 1
 fi
 
+# Get latest release version
+LATEST_TAG=$(curl -fsSI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" | grep -o '[^/]*$')
+echo "Latest version:  ${LATEST_TAG:-unknown}"
+echo
+
 # Download latest release
-echo "Downloading latest release..."
+echo "Downloading $LATEST_TAG..."
 DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$BINARY"
 mkdir -p "$HOME/.local/bin"
 curl -fsSL -o "$HOME/.local/bin/snoot" "$DOWNLOAD_URL"
 chmod +x "$HOME/.local/bin/snoot"
 echo "✓ Installed to ~/.local/bin/snoot"
 
-# Check for Claude CLI
-if command -v claude &>/dev/null; then
-  echo "✓ Claude CLI found"
-else
-  echo "⚠ Claude CLI not found"
-  echo "  Install it: npm install -g @anthropic-ai/claude-code"
-  echo "  Snoot will work once claude is on your PATH."
+# Check for supported AI CLIs
+FOUND_CLI=0
+for cli in claude gemini codex; do
+  if command -v "$cli" &>/dev/null; then
+    echo "✓ $cli CLI found"
+    FOUND_CLI=1
+  fi
+done
+if [ "$FOUND_CLI" = "0" ]; then
+  echo "⚠ No AI CLI found (claude, gemini, or codex)"
+  echo "  Install one: npm install -g @anthropic-ai/claude-code"
+  echo "  Or configure an OpenAI-compatible endpoint after install."
 fi
 
 # Ensure ~/.local/bin is in PATH for this session and future shells
