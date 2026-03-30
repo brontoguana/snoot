@@ -42,6 +42,7 @@ export function handleCommand(
           "",
           "CONTEXT",
           "  /pin <text> — pin context that survives compaction",
+          "  /pins — list all pins",
           "  /unpin <id> — remove a pin",
           "  /window <n> — set conversation window size",
           "  /compact — force context compaction",
@@ -213,6 +214,19 @@ export function handleCommand(
       context.addPin(pinText);
       const allPins = context.getState().pins;
       const lines = ["Pinned.", ""];
+      for (const p of allPins) {
+        lines.push(`  #${p.id}: ${p.text}`);
+      }
+      lines.push("", "Use /unpin <id> to remove.");
+      return { response: lines.join("\n") };
+    }
+
+    case "/pins": {
+      const allPins = context.getState().pins;
+      if (allPins.length === 0) {
+        return { response: "No pins." };
+      }
+      const lines: string[] = [];
       for (const p of allPins) {
         lines.push(`  #${p.id}: ${p.text}`);
       }
