@@ -336,17 +336,18 @@ export function createProxy(config: Config) {
 
     const reportPromptFile = join(config.workDir, ".snoot", config.channel, "report-prompt.txt");
     const reportPrompt = [
-      "You are reviewing the work log of an AI coding assistant. The log contains real-time output from the assistant's session including tool calls, responses, errors, and user messages.",
-      `Read the log file provided and produce a concise progress report. Start the report with the snoot instance name "${config.channel}" and the log path on the next line, then cover:`,
-      "1. What the assistant has been working on (main tasks/goals)",
-      "2. Important events and changes made (files edited, commands run, key decisions) — include timestamps for each event",
-      "3. Current goal — what the assistant appears to be actively working on or trying to accomplish right now",
-      "4. Current status — what's done, what's in progress, any errors or blockers",
-      "5. Overall assessment of progress",
+      "You are reviewing the work log of an AI coding assistant.",
+      `Read the log file and produce a SHORT progress report. Format:`,
       "",
-      "Include timestamps from the log for important events so the reader knows when things happened.",
-      "Keep it concise and factual. Use plain text, no markdown formatting.",
-      "Do NOT edit, write, or create any files. Just read and report.",
+      `Line 1: The snoot instance name "${config.channel}"`,
+      `Line 2: The watch log path`,
+      "",
+      "Then exactly two short paragraphs:",
+      "Paragraph 1: What the agent is working on — its current task and goal.",
+      "Paragraph 2: The progress it has made — what's done, what's in flight, any blockers.",
+      "",
+      "That's it. No event lists, no bullet points, no timestamps, no numbered items. Just two concise paragraphs.",
+      "Use plain text, no markdown. Do NOT edit, write, or create any files.",
     ].join("\n");
     await Bun.write(reportPromptFile, reportPrompt);
 
@@ -419,17 +420,18 @@ export function createProxy(config: Config) {
 
     const reportPromptFile = join(config.workDir, ".snoot", config.channel, "report-all-prompt.txt");
     const reportPrompt = [
-      "You are reviewing the work log of an AI coding assistant (called a snoot). The log contains real-time output from the assistant's session including tool calls, responses, errors, and user messages.",
-      "Read the log file provided and produce a concise progress report. Start the report with the snoot instance name and the log path on the next line, then cover:",
-      "1. What the assistant has been working on (main tasks/goals)",
-      "2. Important events and changes made (files edited, commands run, key decisions) — include timestamps for each event",
-      "3. Current goal — what the assistant appears to be actively working on or trying to accomplish right now",
-      "4. Current status — what's done, what's in progress, any errors or blockers",
-      "5. Overall assessment of progress",
+      "You are reviewing the work log of an AI coding assistant (called a snoot).",
+      "Read the log file and produce a SHORT progress report. Format:",
       "",
-      "Include timestamps from the log for important events so the reader knows when things happened.",
-      "Keep it concise and factual. Use plain text, no markdown formatting.",
-      "Do NOT edit, write, or create any files. Just read and report.",
+      "Line 1: The snoot instance name",
+      "Line 2: The watch log path",
+      "",
+      "Then exactly two short paragraphs:",
+      "Paragraph 1: What the agent is working on — its current task and goal.",
+      "Paragraph 2: The progress it has made — what's done, what's in flight, any blockers.",
+      "",
+      "That's it. No event lists, no bullet points, no timestamps, no numbered items. Just two concise paragraphs.",
+      "Use plain text, no markdown. Do NOT edit, write, or create any files.",
     ].join("\n");
     await Bun.write(reportPromptFile, reportPrompt);
 

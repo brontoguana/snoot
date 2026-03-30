@@ -102,10 +102,15 @@ export function createClaudeManager(config: Config): LLMManager {
           }
           break;
         }
-        case "rate_limit_event":
-          events.push({ kind: "rate_limit", reason: json.message || "rate limited" });
+        case "rate_limit_event": {
+          const info = json.rate_limit_info;
+          const status = info?.status;
+          if (status && status !== "allowed") {
+            events.push({ kind: "rate_limit", reason: json.message || `rate limited (${status})` });
+          }
           events.push({ kind: "log", message: `Rate limit event: ${JSON.stringify(json).slice(0, 300)}` });
           break;
+        }
         case "result":
           events.push({ kind: "result", text: (json as any).result || "" });
           break;
