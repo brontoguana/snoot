@@ -34,14 +34,18 @@ else
   exit 1
 fi
 
-# Get latest release version
-LATEST_TAG=$(curl -fsSI "https://github.com/$REPO/releases/latest" 2>/dev/null | grep -i '^location:' | grep -o '[^/]*$' | tr -d '\r')
-echo "Latest version:  Snoot ${LATEST_TAG:-unknown}"
+# Get latest release version tag from GitHub redirect
+LATEST_TAG=$(curl -fsSI "https://github.com/$REPO/releases/latest" 2>/dev/null | grep -i '^location:' | grep -o 'v[0-9][^[:space:]]*' | tr -d '\r')
+if [ -z "$LATEST_TAG" ]; then
+  echo "Could not determine latest version"
+  LATEST_TAG="latest"
+fi
+echo "Installing:      Snoot $LATEST_TAG"
 echo
 
-# Download latest release
+# Download release
 echo "Downloading $LATEST_TAG..."
-DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$BINARY"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$BINARY"
 mkdir -p "$HOME/.local/bin"
 curl -fsSL -o "$HOME/.local/bin/snoot" "$DOWNLOAD_URL"
 chmod +x "$HOME/.local/bin/snoot"
@@ -77,8 +81,12 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
   fi
 done
 
+# Confirm installed version
 echo
-echo "Done! Next steps:"
-echo "  snoot set-user <recipient-session-id>    # one-time setup"
-echo "  cd /your/project && snoot MyChannel  # start a channel"
+INSTALLED=$("$HOME/.local/bin/snoot" --version 2>/dev/null || echo "unknown")
+echo "Installed:       $INSTALLED"
+echo
+echo "Next steps:"
+echo "  snoot setup session <session-id>         # one-time setup"
+echo "  cd /your/project && snoot MyChannel      # start a channel"
 echo
