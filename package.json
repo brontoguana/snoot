@@ -1,6 +1,6 @@
 {
   "name": "snoot",
-  "version": "0.7.27",
+  "version": "0.7.28",
   "description": "Proxy encrypted messengers (Session/Matrix) to AI coding assistants",
   "type": "module",
   "bin": {

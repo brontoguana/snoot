@@ -686,6 +686,13 @@ export function createProxy(config: Config) {
         autoMessage = autoArg;
         watchLog(`🔄 Auto mode on: "${autoArg}"`);
         sessionClient.send(`Auto mode on. Will send "${autoArg}" after each response.\nSend /stop or /auto off to cancel.`).catch(() => {});
+        // If idle, kick-start by injecting the auto message now
+        if (!processing) {
+          watchLog(`🔄 Auto: kick-starting with "${autoArg}"`);
+          sessionClient.send(`🤖 ${autoArg}`).catch(() => {});
+          messageQueue.push(autoArg);
+          processQueue();
+        }
       }
       return;
     }
@@ -977,6 +984,7 @@ export function createProxy(config: Config) {
       // Auto mode: re-inject the auto message after each successful response
       if (autoMessage && messageQueue.length === 0) {
         watchLog(`🔄 Auto: injecting "${autoMessage}"`);
+        sessionClient.send(`🤖 ${autoMessage}`).catch(() => {});
         messageQueue.push(autoMessage);
       }
     }
