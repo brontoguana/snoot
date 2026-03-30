@@ -35,8 +35,8 @@ else
 fi
 
 # Get latest release version
-LATEST_TAG=$(curl -fsSI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" | grep -o '[^/]*$')
-echo "Latest version:  ${LATEST_TAG:-unknown}"
+LATEST_TAG=$(curl -fsSI "https://github.com/$REPO/releases/latest" 2>/dev/null | grep -i '^location:' | grep -o '[^/]*$' | tr -d '\r')
+echo "Latest version:  Snoot ${LATEST_TAG:-unknown}"
 echo
 
 # Download latest release
