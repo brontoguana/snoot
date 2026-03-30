@@ -56,6 +56,7 @@ export function createProxy(config: Config) {
   let shuttingDown = false;
   let pendingAvatar = false;
   let pendingCliInstall = false;
+  let autoMessage: string | null = null; // /auto mode: message to re-inject after each LLM response
   type BufferEntry = { type: "text"; content: string } | { type: "tool"; content: string };
   let chunkBuffer: BufferEntry[] = [];
   let textCharsSent = 0;
@@ -669,6 +670,26 @@ export function createProxy(config: Config) {
       return;
     }
 
+    // /auto — auto-repeat a message after each LLM response (bypass queue)
+    const autoMatch = trimmed.match(/^\/auto\s*(.*)/i);
+    if (autoMatch !== null) {
+      const autoArg = autoMatch[1].trim();
+      if (!autoArg || autoArg.toLowerCase() === "off" || autoArg.toLowerCase() === "stop") {
+        if (autoMessage) {
+          autoMessage = null;
+          watchLog(`🔄 Auto mode off`);
+          sessionClient.send("Auto mode off.").catch(() => {});
+        } else {
+          sessionClient.send("Auto mode is not active.").catch(() => {});
+        }
+      } else {
+        autoMessage = autoArg;
+        watchLog(`🔄 Auto mode on: "${autoArg}"`);
+        sessionClient.send(`Auto mode on. Will send "${autoArg}" after each response.\nSend /stop or /auto off to cancel.`).catch(() => {});
+      }
+      return;
+    }
+
     // /btw — side question in a separate process (bypass queue)
     const btwMatch = trimmed.match(/^\/btw\s+([\s\S]+)/i);
     if (btwMatch) {
@@ -781,7 +802,13 @@ export function createProxy(config: Config) {
     const cmdResult = handleCommand(text, config, context, llm);
     if (!cmdResult) return false;
 
-    const cmd = text.trim().toLowerCase();
+    const cmd = text.trim().split(/\s+/)[0].toLowerCase();
+    // /stop and /kill cancel auto mode
+    if ((cmd === "/stop" || cmd === "/kill") && autoMessage) {
+      autoMessage = null;
+      watchLog(`🔄 Auto mode cancelled by ${cmd}`);
+      cmdResult.response += "\nAuto mode cancelled.";
+    }
     if (cmd === "/forget" || cmd === "/clear") {
       watchLog(`🗑️ Clearing context`);
       if (llm.isAlive()) await llm.kill();
@@ -945,6 +972,12 @@ export function createProxy(config: Config) {
         } catch {
           console.error("[proxy] Failed to send error message");
         }
+      }
+
+      // Auto mode: re-inject the auto message after each successful response
+      if (autoMessage && messageQueue.length === 0) {
+        watchLog(`🔄 Auto: injecting "${autoMessage}"`);
+        messageQueue.push(autoMessage);
       }
     }
 
