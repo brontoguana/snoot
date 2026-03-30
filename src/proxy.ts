@@ -339,11 +339,12 @@ export function createProxy(config: Config) {
       "You are reviewing the work log of an AI coding assistant. The log contains real-time output from the assistant's session including tool calls, responses, errors, and user messages.",
       `Read the log file provided and produce a concise progress report. Start the report with the snoot instance name "${config.channel}" and the log path on the next line, then cover:`,
       "1. What the assistant has been working on (main tasks/goals)",
-      "2. Important events and changes made (files edited, commands run, key decisions)",
+      "2. Important events and changes made (files edited, commands run, key decisions) — include timestamps for each event",
       "3. Current goal — what the assistant appears to be actively working on or trying to accomplish right now",
       "4. Current status — what's done, what's in progress, any errors or blockers",
       "5. Overall assessment of progress",
       "",
+      "Include timestamps from the log for important events so the reader knows when things happened.",
       "Keep it concise and factual. Use plain text, no markdown formatting.",
       "Do NOT edit, write, or create any files. Just read and report.",
     ].join("\n");
@@ -391,7 +392,7 @@ export function createProxy(config: Config) {
     }
 
     const now = Date.now();
-    const ONE_DAY = 24 * 60 * 60 * 1000;
+    const EIGHT_HOURS = 8 * 60 * 60 * 1000;
     const activeLogs: { channel: string; path: string }[] = [];
 
     for (const entry of readdirSync(instancesDir)) {
@@ -401,14 +402,14 @@ export function createProxy(config: Config) {
         const logPath = resolve(inst.cwd, ".snoot", inst.channel, "watch.log");
         if (!existsSync(logPath)) continue;
         const stat = statSync(logPath);
-        if (now - stat.mtimeMs < ONE_DAY) {
+        if (now - stat.mtimeMs < EIGHT_HOURS) {
           activeLogs.push({ channel: inst.channel, path: logPath });
         }
       } catch {}
     }
 
     if (activeLogs.length === 0) {
-      try { await sessionClient.send("📊 No active snoots found (no watch logs modified in the last 24 hours)."); } catch {}
+      try { await sessionClient.send("📊 No active snoots found (no watch logs modified in the last 8 hours)."); } catch {}
       return;
     }
 
@@ -416,55 +417,67 @@ export function createProxy(config: Config) {
       await sessionClient.send(`📊 Generating reports for ${activeLogs.length} active snoot${activeLogs.length > 1 ? "s" : ""}...`);
     } catch {}
 
-    const reportConfig: Config = {
-      ...config,
-      mode: "research" as Mode,
-    };
-    const reportLlm = createLLM(reportConfig);
-
     const reportPromptFile = join(config.workDir, ".snoot", config.channel, "report-all-prompt.txt");
     const reportPrompt = [
-      "You are reviewing the work logs of multiple AI coding assistants (called snoots). Each log file belongs to a different snoot instance.",
-      "Read each log file provided and produce a concise progress report for each snoot covering:",
+      "You are reviewing the work log of an AI coding assistant (called a snoot). The log contains real-time output from the assistant's session including tool calls, responses, errors, and user messages.",
+      "Read the log file provided and produce a concise progress report. Start the report with the snoot instance name and the log path on the next line, then cover:",
       "1. What the assistant has been working on (main tasks/goals)",
-      "2. Important events and changes made (files edited, commands run, key decisions)",
+      "2. Important events and changes made (files edited, commands run, key decisions) — include timestamps for each event",
       "3. Current goal — what the assistant appears to be actively working on or trying to accomplish right now",
       "4. Current status — what's done, what's in progress, any errors or blockers",
       "5. Overall assessment of progress",
       "",
-      "Format each report with the snoot instance name as a header, followed by the watch log path on the next line, then the report body.",
+      "Include timestamps from the log for important events so the reader knows when things happened.",
       "Keep it concise and factual. Use plain text, no markdown formatting.",
       "Do NOT edit, write, or create any files. Just read and report.",
     ].join("\n");
     await Bun.write(reportPromptFile, reportPrompt);
 
-    const logList = activeLogs.map(l => `${l.channel}: ${l.path}`).join("\n");
-    const question = `Read each of these work logs and provide a progress report for each snoot:\n\n${logList}`;
-    reportLlm.send(question, reportPromptFile);
-
     const REPORT_TIMEOUT = 3 * 60 * 1000;
-    let timedOut = false;
-    const timeout = new Promise<string | null>((resolve) =>
-      setTimeout(() => { timedOut = true; resolve(null); }, REPORT_TIMEOUT)
-    );
-    const response = await Promise.race([reportLlm.waitForResponse(), timeout]);
 
-    if (timedOut) {
-      watchLog("⚠️ /report all timed out after 3 minutes, killing process");
-      reportLlm.forceKill();
-      try { await sessionClient.send("/report all timed out."); } catch {}
-      return;
-    }
+    // Process each snoot sequentially with a 3-second gap between reports
+    for (let i = 0; i < activeLogs.length; i++) {
+      const log = activeLogs[i];
 
-    if (response) {
-      watchLog(`📊 /report all response (${response.length} chars)`);
-      try {
-        await sendRichResponse(`📊 ${response}`);
-      } catch {}
-    } else {
-      try {
-        await sessionClient.send("📊 No report generated.");
-      } catch {}
+      if (i > 0) {
+        // Wait 3 seconds between reports
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
+      watchLog(`📊 /report all: generating report for ${log.channel} (${i + 1}/${activeLogs.length})`);
+
+      const reportConfig: Config = {
+        ...config,
+        mode: "research" as Mode,
+      };
+      const reportLlm = createLLM(reportConfig);
+
+      const question = `Read this work log and provide a progress report for snoot instance "${log.channel}":\n${log.path}`;
+      reportLlm.send(question, reportPromptFile);
+
+      let timedOut = false;
+      const timeout = new Promise<string | null>((resolve) =>
+        setTimeout(() => { timedOut = true; resolve(null); }, REPORT_TIMEOUT)
+      );
+      const response = await Promise.race([reportLlm.waitForResponse(), timeout]);
+
+      if (timedOut) {
+        watchLog(`⚠️ /report all: ${log.channel} timed out after 3 minutes, killing`);
+        reportLlm.forceKill();
+        try { await sessionClient.send(`📊 ${log.channel}: timed out.`); } catch {}
+        continue;
+      }
+
+      if (response) {
+        watchLog(`📊 /report all: ${log.channel} response (${response.length} chars)`);
+        try {
+          await sendRichResponse(`📊 ${response}`);
+        } catch {}
+      } else {
+        try {
+          await sessionClient.send(`📊 ${log.channel}: no report generated — log may be empty.`);
+        } catch {}
+      }
     }
   }
 
