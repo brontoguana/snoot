@@ -321,6 +321,65 @@ export function createProxy(config: Config) {
     }
   }
 
+  async function handleReport(): Promise<void> {
+    watchLog(`📊 /report: generating progress report`);
+    try {
+      await sessionClient.send("📊 Generating report...");
+    } catch {}
+
+    // Spawn a throwaway LLM in research mode so it can read the watch log
+    const reportConfig: Config = {
+      ...config,
+      mode: "research" as Mode,
+    };
+    const reportLlm = createLLM(reportConfig);
+
+    const reportPromptFile = join(config.workDir, ".snoot", config.channel, "report-prompt.txt");
+    const reportPrompt = [
+      "You are reviewing the work log of an AI coding assistant. The log contains real-time output from the assistant's session including tool calls, responses, errors, and user messages.",
+      "Read the log file provided and produce a concise progress report covering:",
+      "1. What the assistant has been working on (main tasks/goals)",
+      "2. Important events and changes made (files edited, commands run, key decisions)",
+      "3. Current goal — what the assistant appears to be actively working on or trying to accomplish right now",
+      "4. Current status — what's done, what's in progress, any errors or blockers",
+      "5. Overall assessment of progress",
+      "",
+      "Keep it concise and factual. Use plain text, no markdown formatting.",
+      "Do NOT edit, write, or create any files. Just read and report.",
+    ].join("\n");
+    await Bun.write(reportPromptFile, reportPrompt);
+
+    const question = `Read this work log and provide a progress report: ${watchLogPath}`;
+    reportLlm.send(question, reportPromptFile);
+
+    const REPORT_TIMEOUT = 3 * 60 * 1000; // 3 minutes
+    let timedOut = false;
+    const timeout = new Promise<string | null>((resolve) =>
+      setTimeout(() => { timedOut = true; resolve(null); }, REPORT_TIMEOUT)
+    );
+    const response = await Promise.race([reportLlm.waitForResponse(), timeout]);
+
+    if (timedOut) {
+      watchLog("⚠️ /report timed out after 3 minutes, killing process");
+      reportLlm.forceKill();
+      try {
+        await sessionClient.send("/report timed out.");
+      } catch {}
+      return;
+    }
+
+    if (response) {
+      watchLog(`📊 /report response (${response.length} chars)`);
+      try {
+        await sendRichResponse(`📊 ${response}`);
+      } catch {}
+    } else {
+      try {
+        await sessionClient.send("📊 No report generated — the log may be empty.");
+      } catch {}
+    }
+  }
+
   async function start(): Promise<void> {
     try {
       await initResvg();
@@ -694,6 +753,12 @@ export function createProxy(config: Config) {
           processQueue();
         }
       }
+      return;
+    }
+
+    // /report — progress report from the watch log (bypass queue)
+    if (trimmed.toLowerCase() === "/report") {
+      handleReport();
       return;
     }
 
