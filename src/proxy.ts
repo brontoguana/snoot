@@ -4,6 +4,7 @@ import { homedir } from "os";
 import type { Config, LLMManager, TransportClient, Backend, Mode, IncomingMessage, IncomingAttachment, EndpointConfig } from "./types.js";
 import { createSessionClient } from "./session.js";
 import { createMatrixClient } from "./matrix.js";
+import { createSimplexClient } from "./simplex.js";
 import { createClaudeManager } from "./claude.js";
 import { createGeminiManager } from "./gemini.js";
 import { createCodexManager } from "./codex.js";
@@ -494,7 +495,9 @@ export function createProxy(config: Config) {
     } catch (err) {
       console.error("[proxy] Failed to load context, starting fresh:", err);
     }
-    sessionClient = config.transport === "matrix"
+    sessionClient = config.transport === "simplex"
+      ? await createSimplexClient(config)
+      : config.transport === "matrix"
       ? await createMatrixClient(config)
       : await createSessionClient(config);
 

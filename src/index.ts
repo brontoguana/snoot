@@ -225,8 +225,9 @@ function saveGlobalConfig(config: GlobalConfig): void {
 }
 
 function detectTransport(userId: string): Transport {
-  // @user:server = Matrix, 05<hex> = Session
+  // @user:server = Matrix, simplex.chat URL = SimpleX, 05<hex> = Session
   if (userId.startsWith("@") && userId.includes(":")) return "matrix";
+  if (userId.includes("simplex.chat") || userId.startsWith("simplex:")) return "simplex";
   return "session";
 }
 
@@ -323,10 +324,11 @@ function handleSetupEndpoint(args: string[]): never {
 async function handleSetup(args: string[]): Promise<never> {
   const subcommand = args[0]?.toLowerCase();
 
-  if (!subcommand || !["session", "matrix", "endpoint"].includes(subcommand)) {
+  if (!subcommand || !["session", "matrix", "simplex", "endpoint"].includes(subcommand)) {
     console.log(`Usage:
   snoot setup session <session-id>
   snoot setup matrix <@user:server> [--homeserver <url>] [--token <access-token>]
+  snoot setup simplex <simplex-address>
   snoot setup endpoint <name> [--url <url>] [--model <model>] [--api-key <key>]
   snoot setup endpoint --list
   snoot setup endpoint --remove <name>
@@ -479,6 +481,56 @@ Current config:`);
 
     if (wasSession && loadInstances().length > 0) {
       await restartAllInstances("Transport switched to matrix");
+    }
+    process.exit(0);
+  }
+
+  if (transport === "simplex") {
+    const { installSimplexCli, isSimplexInstalled } = await import("./simplex.js");
+
+    const simplexAddress = args[1];
+    if (!simplexAddress) {
+      console.error("Usage: snoot setup simplex <simplex-address>");
+      console.error("  Copy your SimpleX address from the app (Settings > Your SimpleX address > Share)");
+      process.exit(1);
+    }
+
+    // Auto-download SimpleX CLI if not installed
+    if (!isSimplexInstalled()) {
+      console.log("SimpleX CLI not found. Downloading...");
+      try {
+        await installSimplexCli();
+      } catch (err) {
+        console.error(`Failed to install SimpleX CLI: ${err instanceof Error ? err.message : err}`);
+        process.exit(1);
+      }
+    } else {
+      console.log("SimpleX CLI already installed.");
+    }
+
+    const existing = loadGlobalConfig() || {} as GlobalConfig;
+    const wasDifferent = existing.transport !== "simplex";
+    const config: GlobalConfig = {
+      ...existing,
+      transport: "simplex",
+      userId: simplexAddress,
+    };
+    saveGlobalConfig(config);
+
+    console.log(`\nTransport: simplex`);
+    console.log(`Address: ${simplexAddress.slice(0, 60)}...`);
+    console.log(`Saved to ~/.snoot/config.json`);
+    console.log();
+    console.log(`When you start a snoot, it will:`);
+    console.log(`  1. Start a local SimpleX Chat CLI instance`);
+    console.log(`  2. Send a connection request to your SimpleX app`);
+    console.log(`  3. Accept it on your phone to start chatting`);
+    console.log();
+    console.log(`NOTE: Snoot runs AI with full permissions (no confirmation prompts).`);
+    console.log(`Anyone who can message this bot can execute commands on this machine.`);
+
+    if (wasDifferent && loadInstances().length > 0) {
+      await restartAllInstances("Transport switched to simplex");
     }
     process.exit(0);
   }
@@ -912,6 +964,7 @@ async function parseArgs(): Promise<Config & { foreground: boolean }> {
     console.log(`Usage: snoot <channel> [options]
        snoot setup session <session-id>
        snoot setup matrix <@user:server> [--homeserver <url>] [--token <token>]
+       snoot setup simplex <simplex-address>
        snoot setup endpoint <name> [--url <url>] [--model <model>] [--api-key <key>]
        snoot shutdown [channel]
        snoot restart [channel]
@@ -933,6 +986,8 @@ Commands:
   setup session <id>    Configure Session transport with your Session ID.
   setup matrix <user>   Configure Matrix transport. Use --homeserver and --token,
                         or omit --token to login with password interactively.
+  setup simplex <addr>  Configure SimpleX transport. Auto-downloads the CLI.
+                        Copy your address from SimpleX app settings.
   setup endpoint <name> Configure an LLM endpoint. CLI auto-detected for "claude"
                         and "gemini". Use --url for OpenAI-compatible APIs.
   setup endpoint --list List all configured endpoints.
@@ -1048,6 +1103,7 @@ Commands:
       `No user ID configured.\n` +
       `  Run: snoot setup session <session-id>    (Session transport)\n` +
       `  Or:  snoot setup matrix <@user:server>   (Matrix transport)\n` +
+      `  Or:  snoot setup simplex <address>       (SimpleX transport)\n` +
       `  Or:  snoot ${channel} --user <id>        (per-project override)`
     );
     process.exit(1);

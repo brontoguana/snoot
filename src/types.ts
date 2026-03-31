@@ -10,7 +10,7 @@ export interface EndpointConfig {
   model?: string;    // for openai type: default model name
   apiKey?: string;   // for openai type: API key
 }
-export type Transport = "session" | "matrix";
+export type Transport = "session" | "matrix" | "simplex";
 
 export interface MatrixConfig {
   homeserver: string; // e.g. "https://matrix.org"
