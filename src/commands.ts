@@ -28,7 +28,7 @@ export function handleCommand(
           "STATUS",
           "  /help — show this message",
           "  /boop — check if LLM is busy",
-          "  /report — progress report on current session",
+          "  /report [question] — progress report (optionally answer a question too)",
           "  /report all — report on all active snoots",
           "  /status — show current config",
           "  /context — show summary, pins, recent activity",

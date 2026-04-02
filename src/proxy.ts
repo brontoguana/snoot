@@ -322,7 +322,7 @@ export function createProxy(config: Config) {
     }
   }
 
-  async function handleReport(): Promise<void> {
+  async function handleReport(userQuestion?: string): Promise<void> {
     watchLog(`📊 /report: generating progress report`);
     try {
       await sessionClient.send("📊 Generating report...");
@@ -349,6 +349,10 @@ export function createProxy(config: Config) {
       "",
       "That's it. No event lists, no bullet points, no timestamps, no numbered items. Just two concise paragraphs.",
       "Use plain text, no markdown. Do NOT edit, write, or create any files.",
+      ...(userQuestion ? [
+        "",
+        `After the report, add a blank line and then answer this question from the user: "${userQuestion}"`,
+      ] : []),
     ].join("\n");
     await Bun.write(reportPromptFile, reportPrompt);
 
@@ -867,8 +871,9 @@ export function createProxy(config: Config) {
       handleReportAll();
       return;
     }
-    if (trimmed.toLowerCase() === "/report") {
-      handleReport();
+    const reportMatch = trimmed.match(/^\/report(?:\s+([\s\S]+))?$/i);
+    if (reportMatch) {
+      handleReport(reportMatch[1]?.trim() || undefined);
       return;
     }
 

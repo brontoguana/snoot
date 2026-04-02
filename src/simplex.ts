@@ -1,11 +1,13 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
+import { createServer } from "net";
 import type { Config, TransportClient, IncomingAttachment, IncomingMessage } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 6000;
 const SEND_TIMEOUT = 30_000;
 const WS_PORT_BASE = 5225;
+const SEEN_MAX_AGE = 5 * 60_000; // prune dedup entries older than 5 minutes
 
 // SimpleX CLI binary location
 const SIMPLEX_BIN_DIR = resolve(homedir(), ".snoot", "simplex");
@@ -21,6 +23,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+/** Returns true for transient errors worth retrying (timeouts, connection issues) */
+function isTransientError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /timed out|timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|WebSocket|connection|network/i.test(msg);
+}
+
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   const RETRY_DELAYS = [5, 15, 30, 60];
   let lastErr: unknown;
@@ -29,7 +37,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
       return await withTimeout(fn(), SEND_TIMEOUT, label);
     } catch (err) {
       lastErr = err;
-      if (attempt >= RETRY_DELAYS.length) throw err;
+      if (!isTransientError(err) || attempt >= RETRY_DELAYS.length) throw err;
       const delay = RETRY_DELAYS[attempt];
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[simplex] ${label} failed (${msg}), retrying in ${delay}s (attempt ${attempt + 1}/${RETRY_DELAYS.length})...`);
@@ -110,8 +118,8 @@ interface SimplexIdentity {
   displayName: string;
 }
 
-/** Generate a unique WS port for this channel based on the channel name */
-function channelPort(channel: string): number {
+/** Generate a preferred WS port for this channel based on the channel name */
+function channelPortPreferred(channel: string): number {
   let hash = 0;
   for (let i = 0; i < channel.length; i++) {
     hash = ((hash << 5) - hash + channel.charCodeAt(i)) | 0;
@@ -119,12 +127,37 @@ function channelPort(channel: string): number {
   return WS_PORT_BASE + (Math.abs(hash) % 1000);
 }
 
+/** Check if a port is available */
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.once("error", () => resolve(false));
+    srv.once("listening", () => { srv.close(() => resolve(true)); });
+    srv.listen(port, "127.0.0.1");
+  });
+}
+
+/** Get a free port, starting from the preferred one */
+async function channelPort(channel: string): Promise<number> {
+  const preferred = channelPortPreferred(channel);
+  if (await isPortFree(preferred)) return preferred;
+  // Try up to 20 alternatives
+  for (let i = 1; i <= 20; i++) {
+    const alt = preferred + i;
+    if (await isPortFree(alt)) {
+      console.log(`[simplex] Port ${preferred} in use, using ${alt}`);
+      return alt;
+    }
+  }
+  throw new Error(`[simplex] Could not find free port near ${preferred}`);
+}
+
 export async function createSimplexClient(config: Config): Promise<TransportClient> {
   const simplexDir = `${config.baseDir}/simplex_data`;
   mkdirSync(simplexDir, { recursive: true });
 
   const identityFile = `${config.baseDir}/simplex_identity.json`;
-  const wsPort = channelPort(config.channel);
+  const wsPort = await channelPort(config.channel);
 
   let identity: SimplexIdentity;
   if (existsSync(identityFile)) {
@@ -133,6 +166,19 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
   } else {
     identity = { contactId: null, wsPort: wsPort, displayName: config.channel };
   }
+
+  // Deduplication and startup filtering state
+  const startedAt = Date.now();
+  const seenChatItemIds = new Map<string, number>(); // chatItemId → time first seen
+
+  // Periodically prune old dedup entries
+  const pruneTimer = setInterval(() => {
+    const cutoff = Date.now() - SEEN_MAX_AGE;
+    for (const [id, seenAt] of seenChatItemIds) {
+      if (seenAt < cutoff) seenChatItemIds.delete(id);
+    }
+  }, 60_000);
+  if (pruneTimer.unref) pruneTimer.unref();
 
   // Start the SimpleX CLI as a WebSocket server
   const cliPath = SIMPLEX_BIN_PATH;
@@ -143,9 +189,9 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
   console.log(`[simplex] Starting CLI on ws://localhost:${wsPort} (db: ${simplexDir})`);
 
   const cliProc = Bun.spawn([cliPath, "-p", String(wsPort), "-d", simplexDir], {
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "pipe",
+    stdout: "ignore",
+    stderr: "ignore",
+    stdin: "ignore",
   });
 
   // Wait for the CLI to be ready (it prints to stdout when ready)
@@ -178,8 +224,31 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
 
   let ws: WebSocket;
   let corrIdCounter = 0;
+  let wsReady = false; // tracks whether the WebSocket is open and usable
   const pendingCommands = new Map<string, { resolve: (resp: any) => void; reject: (err: Error) => void }>();
   let onMessageCallback: ((msg: IncomingMessage) => void) | null = null;
+  let cliDead = false;
+
+  // Pending file download resolvers: fileId → resolve callback
+  const pendingFileDownloads = new Map<number, { resolve: (path: string) => void; reject: (err: Error) => void }>();
+
+  // Escalating reconnect backoff (seconds) — matches Session's pattern
+  const RECONNECT_DELAYS = [5, 10, 15, 30, 30, 60, 60, 60, 120, 120, 300];
+  let reconnectAttempt = 0;
+
+  // Watch for CLI process death
+  cliProc.exited.then((code) => {
+    if (cliDead) return; // already handled
+    cliDead = true;
+    console.error(`[simplex] CLI process exited with code ${code} — shutting down`);
+    // Reject all pending commands
+    for (const [id, handler] of pendingCommands) {
+      handler.reject(new Error("[simplex] CLI process died"));
+      pendingCommands.delete(id);
+    }
+    // Exit the snoot process — the supervisor/daemon will restart it
+    process.exit(1);
+  });
 
   function nextCorrId(): string {
     return String(++corrIdCounter);
@@ -187,21 +256,33 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
 
   async function connectWs(): Promise<void> {
     return new Promise<void>((resolveConnect, rejectConnect) => {
+      if (cliDead) {
+        rejectConnect(new Error("[simplex] CLI process is dead, cannot connect"));
+        return;
+      }
+
       ws = new WebSocket(`ws://localhost:${wsPort}`);
 
       ws.onopen = () => {
         console.log(`[simplex] WebSocket connected to port ${wsPort}`);
+        wsReady = true;
+        reconnectAttempt = 0; // reset backoff on successful connect
         resolveConnect();
       };
 
       ws.onerror = (ev: Event) => {
         console.error(`[simplex] WebSocket error`);
+        wsReady = false;
         rejectConnect(new Error("WebSocket connection failed"));
       };
 
       ws.onclose = () => {
-        console.log(`[simplex] WebSocket closed, reconnecting in 5s...`);
-        setTimeout(() => connectWs().catch(err => console.error("[simplex] Reconnect failed:", err)), 5000);
+        wsReady = false;
+        if (cliDead) return; // don't reconnect if CLI is dead
+        const delay = RECONNECT_DELAYS[Math.min(reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+        reconnectAttempt++;
+        console.log(`[simplex] WebSocket closed, reconnecting in ${delay}s (attempt ${reconnectAttempt})...`);
+        setTimeout(() => connectWs().catch(err => console.error("[simplex] Reconnect failed:", err)), delay * 1000);
       };
 
       ws.onmessage = (event: MessageEvent) => {
@@ -258,6 +339,15 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
           // Only accept from our known contact
           if (identity.contactId && chatInfo.contact?.contactId !== identity.contactId) continue;
 
+          // Skip messages from before this session started
+          const itemTs = chatItem.meta?.createdAt ? new Date(chatItem.meta.createdAt).getTime() : 0;
+          if (itemTs > 0 && itemTs < startedAt) continue;
+
+          // Deduplicate by chat item ID
+          const itemId = String(chatItem.chatItemId || chatItem.meta?.itemId || itemTs);
+          if (seenChatItemIds.has(itemId)) continue;
+          seenChatItemIds.set(itemId, Date.now());
+
           // Extract text content — only from received messages (not our own sends)
           const content = chatItem.content;
           let text = "";
@@ -296,7 +386,18 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
       }
 
       case "rcvFileComplete": {
-        console.log(`[simplex] File received: ${resp.fileName || "unknown"}`);
+        const fileId = resp.chatItem?.file?.fileId || resp.fileTransferMeta?.fileId;
+        const filePath = resp.chatItem?.file?.filePath || resp.fileTransferMeta?.filePath;
+        console.log(`[simplex] File received: ${resp.fileName || "unknown"} (id=${fileId})`);
+        if (fileId && pendingFileDownloads.has(fileId)) {
+          const handler = pendingFileDownloads.get(fileId)!;
+          pendingFileDownloads.delete(fileId);
+          if (filePath) {
+            handler.resolve(filePath);
+          } else {
+            handler.resolve(`${simplexDir}/files/${resp.fileName || "file"}`);
+          }
+        }
         break;
       }
 
@@ -316,6 +417,11 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
 
   function sendCmd(cmd: string): Promise<any> {
     return new Promise((resolve, reject) => {
+      if (!wsReady || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error(`[simplex] WebSocket not connected (state=${ws?.readyState})`));
+        return;
+      }
+
       const corrId = nextCorrId();
       const timeout = setTimeout(() => {
         pendingCommands.delete(corrId);
@@ -380,6 +486,9 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
   process.on("SIGTERM", () => {
     try { cliProc.kill(); } catch {}
   });
+  process.on("SIGINT", () => {
+    try { cliProc.kill(); } catch {}
+  });
 
   async function startListening(onMessage: (msg: IncomingMessage) => void): Promise<void> {
     onMessageCallback = onMessage;
@@ -389,8 +498,17 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
 
   async function send(text: string): Promise<void> {
     if (!identity.contactId) {
-      console.error("[simplex] Cannot send — no contact connected yet");
-      return;
+      // Wait up to 60s for the contact to be established (user accepting connection)
+      console.log("[simplex] Waiting for contact to accept connection before sending...");
+      const waitStart = Date.now();
+      while (!identity.contactId && Date.now() - waitStart < 60_000) {
+        await Bun.sleep(2000);
+      }
+      if (!identity.contactId) {
+        console.error("[simplex] Cannot send — no contact connected after 60s");
+        return;
+      }
+      console.log(`[simplex] Contact established (id=${identity.contactId}), sending`);
     }
 
     // Use /send @<contactId> text <msg> format for sending by numeric ID
@@ -424,8 +542,15 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
 
   async function sendImage(png: Uint8Array, caption?: string): Promise<void> {
     if (!identity.contactId) {
-      console.error("[simplex] Cannot send image — no contact connected yet");
-      return;
+      console.log("[simplex] Waiting for contact before sending image...");
+      const waitStart = Date.now();
+      while (!identity.contactId && Date.now() - waitStart < 60_000) {
+        await Bun.sleep(2000);
+      }
+      if (!identity.contactId) {
+        console.error("[simplex] Cannot send image — no contact connected after 60s");
+        return;
+      }
     }
     // Write to temp file and send via CLI
     const tmpPath = `${simplexDir}/tmp_send_image.png`;
@@ -436,14 +561,21 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
         await withRetry(() => sendCmd(`/send @${identity.contactId} text ${caption}`), "sendImageCaption");
       }
     } finally {
-      try { if (existsSync(tmpPath)) writeFileSync(tmpPath, ""); } catch {}
+      try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
     }
   }
 
   async function sendFile(filePath: string, caption?: string): Promise<void> {
     if (!identity.contactId) {
-      console.error("[simplex] Cannot send file — no contact connected yet");
-      return;
+      console.log("[simplex] Waiting for contact before sending file...");
+      const waitStart = Date.now();
+      while (!identity.contactId && Date.now() - waitStart < 60_000) {
+        await Bun.sleep(2000);
+      }
+      if (!identity.contactId) {
+        console.error("[simplex] Cannot send file — no contact connected after 60s");
+        return;
+      }
     }
     const absPath = resolve(filePath);
     await withRetry(() => sendCmd(`/f @${identity.contactId} ${absPath}`), "sendFile");
@@ -466,19 +598,40 @@ export async function createSimplexClient(config: Config): Promise<TransportClie
 
   async function getFile(attachment: IncomingAttachment): Promise<File> {
     const raw = attachment._raw as any;
-    if (raw?.fileId) {
-      // Request file download
-      await sendCmd(`/fr ${raw.fileId}`);
-      // Wait a bit for download to complete
-      await Bun.sleep(2000);
-      // Try to find the downloaded file
-      const downloadPath = `${simplexDir}/files/${attachment.name || raw.fileName || "file"}`;
-      if (existsSync(downloadPath)) {
-        const data = readFileSync(downloadPath);
-        return new File([data.buffer as ArrayBuffer], attachment.name || "file");
-      }
+    const fileId = raw?.fileId;
+    if (!fileId) throw new Error("No fileId in SimpleX attachment");
+
+    // Wait for the rcvFileComplete event with a timeout
+    const filePathPromise = new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pendingFileDownloads.delete(fileId);
+        reject(new Error(`[simplex] File download timed out after 30s (fileId=${fileId})`));
+      }, 30_000);
+      pendingFileDownloads.set(fileId, {
+        resolve: (path: string) => { clearTimeout(timeout); resolve(path); },
+        reject: (err: Error) => { clearTimeout(timeout); reject(err); },
+      });
+    });
+
+    // Request file download
+    await sendCmd(`/fr ${fileId}`);
+
+    // Wait for the event
+    const downloadPath = await filePathPromise;
+
+    if (existsSync(downloadPath)) {
+      const data = readFileSync(downloadPath);
+      return new File([data.buffer as ArrayBuffer], attachment.name || "file");
     }
-    throw new Error("Could not download SimpleX file attachment");
+
+    // Fallback: try common path
+    const fallbackPath = `${simplexDir}/files/${attachment.name || raw.fileName || "file"}`;
+    if (existsSync(fallbackPath)) {
+      const data = readFileSync(fallbackPath);
+      return new File([data.buffer as ArrayBuffer], attachment.name || "file");
+    }
+
+    throw new Error("Could not find downloaded SimpleX file");
   }
 
   function getIdentity(): string {
