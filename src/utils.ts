@@ -25,6 +25,13 @@ export function findCliPath(name: string): string | undefined {
       resolve(homedir(), ".bun", "bin"),
       resolve(homedir(), "scoop", "shims"),              // scoop
     );
+  } else {
+    extraDirs.push(
+      resolve(homedir(), ".bun", "bin"),
+      resolve(homedir(), ".npm-global", "bin"),
+      resolve(homedir(), ".local", "bin"),
+      "/usr/local/bin",
+    );
   }
 
   const allDirs = [...pathDirs, ...extraDirs];

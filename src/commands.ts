@@ -413,6 +413,14 @@ export function handleCommand(
         killProcess: true,
       };
 
+    // These are handled in proxy.ts (need async access to switchEndpoint, etc.)
+    case "/claude":
+    case "/gemini":
+    case "/codex":
+    case "/model":
+    case "/effort":
+      return null;
+
     default:
       return {
         response: `Unknown command: ${cmd}. Type /help for available commands.`,
