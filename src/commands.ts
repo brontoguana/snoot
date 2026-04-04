@@ -13,7 +13,7 @@ const RESERVED_COMMANDS = new Set([
   "pin", "pins", "unpin", "profile", "save", "overwrite", "rename",
   "move", "relocate", "stop", "kill", "compact", "restart", "forget",
   "clear", "claude", "gemini", "codex", "model", "effort", "update",
-  "endpoint", "auto", "report", "btw",
+  "endpoint", "emoji", "auto", "report", "btw",
 ]);
 
 export function handleCommand(
@@ -47,6 +47,7 @@ export function handleCommand(
           "  /endpoint [name] — switch or list endpoints",
           "  /model <name> — switch model (opus, sonnet, etc.)",
           "  /effort <level> — low/medium/high/max/default",
+          "  /emoji <emoji> — set icon for current endpoint (/emoji default to reset)",
           `  /mode <chat|research|coding> — current: ${config.mode}`,
           "",
           "CONTEXT",
@@ -428,6 +429,7 @@ export function handleCommand(
     case "/codex":
     case "/model":
     case "/effort":
+    case "/emoji":
     case "/update":
       return null;
 

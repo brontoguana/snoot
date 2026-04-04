@@ -18,6 +18,7 @@ import { findCliPath, loadEndpoints, saveEndpoint, removeEndpoint, endpointDispl
 const IS_WINDOWS = process.platform === "win32";
 
 function backendEmoji(backend: string, ep?: EndpointConfig): string {
+  if (ep?.emoji) return ep.emoji;
   const cli = ep?.cli || backend;
   if (cli === "claude" || backend === "claude") return "⚡";
   if (cli === "gemini" || backend === "gemini") return "💎";
@@ -873,6 +874,46 @@ export function createProxy(config: Config) {
           return;
         }
       }
+    }
+
+    // /emoji — set custom emoji for current endpoint
+    const emojiMatch = trimmed.match(/^\/emoji\s*(.*)/i);
+    if (emojiMatch !== null) {
+      const emojiArg = emojiMatch[1].trim();
+      if (!emojiArg) {
+        const current = backendEmoji(config.backend, config.endpointConfig);
+        sessionClient.send(`Current emoji for ${config.backend}: ${current}\n\nUsage: /emoji <emoji> or /emoji default`).catch(() => {});
+        return;
+      }
+      const endpoints = loadEndpoints();
+      const ep = endpoints[config.backend];
+      if (emojiArg.toLowerCase() === "default") {
+        if (ep) {
+          delete ep.emoji;
+          saveEndpoint(config.backend, ep);
+        }
+        if (config.endpointConfig) delete config.endpointConfig.emoji;
+        const def = backendEmoji(config.backend, config.endpointConfig);
+        sessionClient.send(`Reset ${config.backend} emoji to default: ${def}`).catch(() => {});
+      } else {
+        const newEmoji = emojiArg;
+        if (ep) {
+          ep.emoji = newEmoji;
+          saveEndpoint(config.backend, ep);
+        } else {
+          // Auto-detected endpoint (claude/gemini/codex) — create a config entry to persist the emoji
+          const cli = config.endpointConfig?.cli || config.backend;
+          saveEndpoint(config.backend, { type: "cli", cli, emoji: newEmoji });
+        }
+        if (config.endpointConfig) {
+          config.endpointConfig.emoji = newEmoji;
+        } else {
+          config.endpointConfig = { type: "cli", cli: config.backend, emoji: newEmoji };
+        }
+        sessionClient.send(`Set ${config.backend} emoji to ${newEmoji}`).catch(() => {});
+      }
+      watchLog(`🎨 Emoji for ${config.backend}: ${backendEmoji(config.backend, config.endpointConfig)}`);
+      return;
     }
 
     // /model — switch model (bypass queue)

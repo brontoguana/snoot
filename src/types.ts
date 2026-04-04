@@ -9,6 +9,7 @@ export interface EndpointConfig {
   url?: string;      // for openai type: API base URL
   model?: string;    // for openai type: default model name
   apiKey?: string;   // for openai type: API key
+  emoji?: string;    // custom emoji icon for this endpoint
 }
 export type Transport = "session" | "matrix" | "simplex";
 
