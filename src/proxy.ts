@@ -28,7 +28,7 @@ function backendEmoji(backend: string, ep?: EndpointConfig): string {
 
 function thinkingStatus(config: Config): string {
   const emoji = backendEmoji(config.backend, config.endpointConfig);
-  const parts = [emoji, `${config.windowSize}msg`];
+  const parts = [emoji, config.backend, `${config.windowSize}msg`];
   if (config.model) {
     const display = config.model.replace(/^gemini-/i, "");
     parts.push(display);
@@ -363,10 +363,11 @@ export function createProxy(config: Config) {
       const curlExit = await curlProc.exited;
       if (curlExit !== 0 || !script.trim()) {
         const stderr = await new Response(curlProc.stderr).text();
-        watchLog(`❌ /update: failed to download install script: ${stderr}`);
-        await safeSend("Update failed: couldn't download install script.")
+        watchLog(`❌ /update: failed to download install script (curl exit ${curlExit}): ${stderr}`);
+        await safeSend(`Update failed: couldn't download install script (curl exit ${curlExit}).`)
         return;
       }
+      watchLog(`🔄 /update: install script downloaded (${script.length} bytes), executing...`);
 
       // Write the script to a temp file and execute it
       const scriptPath = join(config.baseDir, "update.sh");
@@ -384,15 +385,17 @@ export function createProxy(config: Config) {
       try { unlinkSync(scriptPath); } catch {}
 
       if (exitCode !== 0) {
-        watchLog(`❌ /update: install script failed (exit ${exitCode}): ${stderr}`);
-        await safeSend(`Update failed (exit ${exitCode}):\n${stderr || stdout}`)
+        const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
+        watchLog(`❌ /update: install script failed (exit ${exitCode}):\nstdout: ${stdout}\nstderr: ${stderr}`);
+        await safeSend(`Update failed (exit ${exitCode}):\n${combined}`)
         return;
       }
 
       // Extract installed version from output
       const versionMatch = stdout.match(/Installed:\s+(\S+)/);
       const newVersion = versionMatch ? versionMatch[1] : "unknown";
-      watchLog(`✅ /update: updated to ${newVersion}`);
+      watchLog(`✅ /update: install script succeeded. stdout: ${stdout.trim().slice(0, 500)}`);
+      watchLog(`✅ /update: version result: ${newVersion}`);
 
       if (newVersion === `v${VERSION}`) {
         await safeSend(`Already on latest version (v${VERSION}).`)

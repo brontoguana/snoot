@@ -43,12 +43,17 @@ fi
 echo "Installing:      Snoot $LATEST_TAG"
 echo
 
-# Download release
+# Download release to temp file first (can't overwrite a running binary on Linux)
 echo "Downloading $LATEST_TAG..."
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$BINARY"
+TMPFILE=$(mktemp /tmp/snoot-update.XXXXXX)
+trap "rm -f '$TMPFILE'" EXIT
+curl -fsSL -o "$TMPFILE" "$DOWNLOAD_URL"
+chmod +x "$TMPFILE"
+
+# Atomic swap — works even if the old binary is running
 mkdir -p "$HOME/.local/bin"
-curl -fsSL -o "$HOME/.local/bin/snoot" "$DOWNLOAD_URL"
-chmod +x "$HOME/.local/bin/snoot"
+mv -f "$TMPFILE" "$HOME/.local/bin/snoot"
 echo "✓ Installed to ~/.local/bin/snoot"
 
 # Check for supported AI CLIs
