@@ -10,6 +10,7 @@ export interface EndpointConfig {
   model?: string;    // for openai type: default model name
   apiKey?: string;   // for openai type: API key
   emoji?: string;    // custom emoji icon for this endpoint
+  maxContextChars?: number; // max context chars before trimming (default 400K)
 }
 export type Transport = "session" | "matrix" | "simplex";
 

@@ -1,5 +1,5 @@
 import { resolve, basename, dirname, join } from "path";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, lstatSync } from "fs";
 import type { Config, LLMManager, LLMStatus, Mode } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
@@ -7,6 +7,10 @@ const MAX_TURNS = 50;
 const RATE_LIMIT_RETRY_DELAY = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
 const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
+const MAX_TOOL_RESULT_CHARS = 30_000;   // Cap individual tool results
+const DEFAULT_MAX_CONTEXT_CHARS = 400_000; // Start trimming old content above this
+const TRIMMED_STUB = "[Content trimmed to save context — re-read the file if needed]";
+const TRIMMED_ASSISTANT_STUB = "[Earlier analysis trimmed to save context]";
 
 // Chrome's reduced/frozen UA string — Chrome committed to freezing this format,
 // so it won't go stale. Sites check for "Chrome/" presence, not the exact version.
@@ -23,7 +27,7 @@ interface ToolDef {
   };
 }
 
-function getToolDefinitions(mode: Mode): ToolDef[] {
+export function getToolDefinitions(mode: Mode): ToolDef[] {
   const tools: ToolDef[] = [];
   const allowed = TOOLS_BY_MODE[mode];
   if (!allowed) return tools;
@@ -35,7 +39,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Read",
-        description: "Read a file from the filesystem. Returns content with line numbers. Use this instead of Bash commands like cat/head/tail. For large files, use offset and limit to read specific sections rather than reading the entire file.",
+        description: "Read a file from the filesystem. Returns content with line numbers and a header showing the range and total line count (e.g. 'Lines 1-200 of 8432'). Use offset and limit to read specific sections of large files.",
         parameters: {
           type: "object",
           properties: {
@@ -54,7 +58,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Grep",
-        description: "Search file contents using regex (powered by ripgrep). Returns matching lines with file paths and line numbers. Use this instead of Bash grep/rg commands. Use the context parameters (-A, -B, -C) to see surrounding code — this avoids needing a separate Read call after finding a match. Use glob or type to narrow the search to specific file types.",
+        description: "Search file contents using regex (powered by ripgrep). By default returns matching lines with file paths and line numbers. Set output_mode to 'files' to get just filenames (saves tokens for broad searches), or 'count' for match counts per file. Use context parameters (-A, -B, -C) to see surrounding code — avoids needing a separate Read call. Use glob or type to narrow the search. Set multiline=true to match patterns across line boundaries.",
         parameters: {
           type: "object",
           properties: {
@@ -62,11 +66,14 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
             path: { type: "string", description: "File or directory to search in (default: working directory)" },
             glob: { type: "string", description: "Glob pattern to filter files (e.g. '*.ts', '*.{js,jsx}')" },
             type: { type: "string", description: "File type filter (e.g. 'ts', 'py', 'rust', 'go')" },
-            context: { type: "number", description: "Show N lines before AND after each match (like grep -C)" },
-            before: { type: "number", description: "Show N lines before each match (like grep -B)" },
-            after: { type: "number", description: "Show N lines after each match (like grep -A)" },
+            output_mode: { type: "string", description: "Output mode: 'content' (default, matching lines), 'files' (filenames only), 'count' (match counts per file)" },
+            context: { type: "number", description: "Show N lines before AND after each match (like grep -C). Only for content mode." },
+            before: { type: "number", description: "Show N lines before each match (like grep -B). Only for content mode." },
+            after: { type: "number", description: "Show N lines after each match (like grep -A). Only for content mode." },
             max_count: { type: "number", description: "Max matches per file (default 100)" },
+            head_limit: { type: "number", description: "Max total lines of output across all files (default 500). Use to prevent huge results from broad searches." },
             case_insensitive: { type: "boolean", description: "Case-insensitive search (default false)" },
+            multiline: { type: "boolean", description: "Enable multiline matching — pattern can span multiple lines (default false)" },
           },
           required: ["pattern"],
         },
@@ -79,7 +86,7 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "Glob",
-        description: "Find files matching a glob pattern. Returns file paths sorted by name. Use this instead of Bash find/ls commands. Use '**/' prefix to search recursively (e.g. '**/*.ts' finds all TypeScript files in all subdirectories).",
+        description: "Find files matching a glob pattern. Returns file paths sorted by modification time (most recently changed first). Use this instead of Bash find/ls commands. Use '**/' prefix to search recursively (e.g. '**/*.ts' finds all TypeScript files in all subdirectories).",
         parameters: {
           type: "object",
           properties: {
@@ -154,12 +161,13 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "WebFetch",
-        description: "Fetch a URL and return its content as clean readable text. HTML pages are automatically converted to text (scripts, styles, nav, and boilerplate are stripped). Use this to read documentation, API references, blog posts, etc. Will not work for pages that require authentication. For search, use WebSearch instead.",
+        description: "Fetch a URL and return its content as clean readable text. HTML pages are automatically converted to text (scripts, styles, nav, and boilerplate are stripped). Use this to read documentation, API references, blog posts, etc. Will not work for pages that require authentication. For search, use WebSearch instead. Use max_bytes to limit how much of the page to download (useful for very large pages).",
         parameters: {
           type: "object",
           properties: {
             url: { type: "string", description: "The URL to fetch (must be fully-formed, e.g. https://...)" },
             raw: { type: "boolean", description: "Return raw HTML instead of extracted text (default false)" },
+            max_bytes: { type: "number", description: "Max bytes to download (default 500KB). Use smaller values for large pages you only need the beginning of." },
           },
           required: ["url"],
         },
@@ -209,12 +217,29 @@ function getToolDefinitions(mode: Mode): ToolDef[] {
       type: "function",
       function: {
         name: "ListDirectory",
-        description: "List files and directories at a given path. Returns names with type indicators (/ for directories) and file sizes. Use this to explore project structure. For finding specific files by name pattern, use Glob instead.",
+        description: "List files and directories at a given path. Returns names with type indicators (/ for directories) and file sizes. Shows hidden files (dotfiles). Set depth > 1 to recurse into subdirectories (max 5). Use Glob for finding specific files by pattern.",
         parameters: {
           type: "object",
           properties: {
             path: { type: "string", description: "Directory path to list (default: working directory)" },
+            show_hidden: { type: "boolean", description: "Include hidden files/dirs starting with . (default true)" },
+            depth: { type: "number", description: "Recursion depth (default 1, max 5). Depth 2 shows immediate children of subdirs too." },
           },
+        },
+      },
+    });
+
+    tools.push({
+      type: "function",
+      function: {
+        name: "Stat",
+        description: "Get file/directory info without reading content. Returns: exists, type (file/directory/symlink), size, line count (for text files), last modified time. Use this to check if a file exists and how big it is before deciding whether to Read it.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Absolute path to the file or directory" },
+          },
+          required: ["path"],
         },
       },
     });
@@ -270,7 +295,8 @@ function formatToolUse(name: string, args: any, pathFn: (p: string) => string = 
     case "Bash": return `Bash: ${(args?.command || "").slice(0, 120)}`;
     case "Grep": return `Grep "${args?.pattern || ""}" in ${args?.path ? pathFn(args.path) : "."}`;
     case "Glob": return `Glob ${args?.pattern || ""}`;
-    case "ListDirectory": return `ListDir ${args?.path ? pathFn(args.path) : "."}`;
+    case "ListDirectory": return `ListDir ${args?.path ? pathFn(args.path) : "."}${args?.depth > 1 ? ` (depth ${args.depth})` : ""}`;
+    case "Stat": return `Stat ${args?.path ? pathFn(args.path) : ""}`;
     case "WebFetch": return `WebFetch: ${(args?.url || "").slice(0, 100)}`;
     case "WebSearch": return `WebSearch: ${(args?.query || "").slice(0, 100)}`;
     case "Think": return `Think (${(args?.thought || "").slice(0, 60)}...)`;
@@ -278,7 +304,7 @@ function formatToolUse(name: string, args: any, pathFn: (p: string) => string = 
   }
 }
 
-async function executeTool(name: string, args: any, workDir: string): Promise<string> {
+export async function executeTool(name: string, args: any, workDir: string): Promise<string> {
   try {
     switch (name) {
       case "Read": return await toolRead(args, workDir);
@@ -289,6 +315,7 @@ async function executeTool(name: string, args: any, workDir: string): Promise<st
       case "Grep": return await toolGrep(args, workDir);
       case "Glob": return await toolGlob(args, workDir);
       case "ListDirectory": return await toolListDir(args, workDir);
+      case "Stat": return await toolStat(args, workDir);
       case "WebFetch": return await toolWebFetch(args);
       case "WebSearch": return await toolWebSearch(args);
       case "Think": return "OK";
@@ -302,12 +329,72 @@ async function executeTool(name: string, args: any, workDir: string): Promise<st
 async function toolRead(args: any, workDir: string): Promise<string> {
   const filePath = resolve(workDir, args.file_path);
   if (!existsSync(filePath)) return `Error: File not found: ${args.file_path}`;
-  const content = readFileSync(filePath, "utf-8");
-  const lines = content.split("\n");
+
+  // Binary detection: read first 8KB and check for null bytes (skip even-offset nulls for UTF-16)
+  const fd = Bun.file(filePath);
+  const size = fd.size;
+  const probe = Buffer.from(await fd.slice(0, 8192).arrayBuffer());
+  if (hasBinaryBytes(probe)) {
+    const ext = filePath.split(".").pop()?.toLowerCase() || "unknown";
+    return `Error: Binary file (${ext}, ${formatSize(size)}) — use Bash to inspect binary files.`;
+  }
+
   const start = Math.max(0, (args.offset || 1) - 1);
   const limit = args.limit || 2000;
-  const selected = lines.slice(start, start + limit);
-  return selected.map((line, i) => `${start + i + 1}\t${line}`).join("\n");
+
+  // For large files (>1MB), stream only the needed lines instead of loading everything
+  if (size > 1_000_000) {
+    return await toolReadStreaming(filePath, size, start, limit);
+  }
+
+  const content = readFileSync(filePath, "utf-8");
+  const totalLines = countLines(content);
+  const lines = content.split("\n");
+  // Remove phantom empty element from trailing newline so lines.length matches totalLines
+  if (lines.length > 1 && lines[lines.length - 1] === "" && content.endsWith("\n")) {
+    lines.pop();
+  }
+  const end = Math.min(start + limit, totalLines);
+  const selected = lines.slice(start, end);
+  const header = `Lines ${start + 1}-${end} of ${totalLines} | ${formatSize(size)}`;
+  const body = selected.map((line, i) => `${start + i + 1}\t${line}`).join("\n");
+  return `${header}\n${body}`;
+}
+
+/** Stream-read specific lines from a large file without loading it all into memory */
+async function toolReadStreaming(filePath: string, size: number, start: number, limit: number): Promise<string> {
+  const stream = Bun.file(filePath).stream();
+  const decoder = new TextDecoder();
+  let lineNum = 0;
+  let totalLines = 0;
+  let leftover = "";
+  const selected: string[] = [];
+  const end = start + limit;
+
+  for await (const chunk of stream) {
+    const text = leftover + decoder.decode(chunk, { stream: true });
+    const lines = text.split("\n");
+    leftover = lines.pop() ?? "";
+
+    for (const line of lines) {
+      totalLines++;
+      if (lineNum >= start && lineNum < end) {
+        selected.push(`${lineNum + 1}\t${line}`);
+      }
+      lineNum++;
+    }
+  }
+  // Handle last line (no trailing newline)
+  if (leftover) {
+    totalLines++;
+    if (lineNum >= start && lineNum < end) {
+      selected.push(`${lineNum + 1}\t${leftover}`);
+    }
+  }
+
+  const shownEnd = Math.min(start + selected.length, totalLines);
+  const header = `Lines ${start + 1}-${shownEnd} of ${totalLines} | ${formatSize(size)}`;
+  return `${header}\n${selected.join("\n")}`;
 }
 
 async function toolEdit(args: any, workDir: string): Promise<string> {
@@ -375,72 +462,210 @@ async function toolBash(args: any, workDir: string): Promise<string> {
 
 async function toolGrep(args: any, workDir: string): Promise<string> {
   const maxCount = args.max_count || 100;
-  const rgArgs = ["rg", "--no-heading", "-n", "--max-count", String(maxCount)];
+  const headLimit = args.head_limit || 500;
+  const mode = args.output_mode || "content";
+  const rgArgs = ["rg"];
+
+  if (mode === "files") {
+    rgArgs.push("--files-with-matches");
+  } else if (mode === "count") {
+    rgArgs.push("--count");
+  } else {
+    rgArgs.push("--no-heading", "-n", "--max-count", String(maxCount));
+  }
+
   if (args.case_insensitive) rgArgs.push("-i");
   if (args.glob) rgArgs.push("--glob", args.glob);
   if (args.type) rgArgs.push("--type", args.type);
-  // Context lines: -C takes precedence, then individual -A/-B
-  if (args.context) {
-    rgArgs.push("-C", String(args.context));
-  } else {
-    if (args.before) rgArgs.push("-B", String(args.before));
-    if (args.after) rgArgs.push("-A", String(args.after));
+  if (args.multiline) rgArgs.push("-U", "--multiline-dotall");
+
+  // Context lines only for content mode
+  if (mode === "content") {
+    if (args.context) {
+      rgArgs.push("-C", String(args.context));
+    } else {
+      if (args.before) rgArgs.push("-B", String(args.before));
+      if (args.after) rgArgs.push("-A", String(args.after));
+    }
   }
+
   rgArgs.push(args.pattern);
   if (args.path) rgArgs.push(args.path);
 
   const result = Bun.spawnSync(rgArgs, { cwd: workDir, timeout: 30_000 });
-  const output = result.stdout?.toString() || "";
-  if (output.length > 50_000) {
-    return output.slice(0, 50_000) + "\n... (truncated)";
+  let output = result.stdout?.toString() || "";
+
+  // Apply head_limit: cap total output lines
+  if (output) {
+    const lines = output.split("\n");
+    if (lines.length > headLimit) {
+      output = lines.slice(0, headLimit).join("\n") + `\n\n⚠️ [Output capped at ${headLimit} lines — ${lines.length - headLimit} more lines omitted. Use head_limit to adjust, or narrow with glob/type/path.]`;
+    }
   }
+
   return output || "(no matches)";
 }
 
 async function toolGlob(args: any, workDir: string): Promise<string> {
   const glob = new Bun.Glob(args.pattern);
   const dir = args.path ? resolve(workDir, args.path) : workDir;
-  const matches: string[] = [];
+  const files: Array<{ path: string; mtime: number }> = [];
+  const MAX_SCAN = 10_000; // scan up to 10K files so mtime sort is accurate
   for await (const file of glob.scan({ cwd: dir })) {
-    matches.push(file);
-    if (matches.length >= 200) {
-      matches.push("... (truncated at 200 results)");
-      break;
+    try {
+      const st = statSync(join(dir, file));
+      files.push({ path: file, mtime: st.mtimeMs });
+    } catch {
+      files.push({ path: file, mtime: 0 });
+    }
+    if (files.length >= MAX_SCAN) break;
+  }
+  // Sort by modification time, most recent first
+  files.sort((a, b) => b.mtime - a.mtime);
+  const display = files.slice(0, 200);
+  const result = display.map(f => f.path).join("\n");
+  if (files.length > 200) {
+    const note = files.length >= MAX_SCAN ? `${MAX_SCAN}+` : String(files.length);
+    return result + `\n... (showing 200 of ${note} matches, sorted by modification time)`;
+  }
+  return result || "(no matches)";
+}
+
+export function formatSize(size: number): string {
+  return size < 1024 ? `${size}B`
+    : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)}K`
+    : `${(size / (1024 * 1024)).toFixed(1)}M`;
+}
+
+/** Count lines in text content, properly handling trailing newlines */
+export function countLines(content: string): number {
+  if (!content) return 0;
+  let count = 0;
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) count++;
+  }
+  // If file ends with \n, the newline count IS the line count
+  // If file doesn't end with \n, add 1 for the last unterminated line
+  return content.charCodeAt(content.length - 1) === 10 ? count : count + 1;
+}
+
+/**
+ * Detect binary content. Checks for null bytes but allows UTF-16 BOM files
+ * (which have nulls at regular even/odd positions) to pass as text.
+ */
+export function hasBinaryBytes(buf: Buffer): boolean {
+  // UTF-16 LE BOM: FF FE, UTF-16 BE BOM: FE FF — treat as text
+  if (buf.length >= 2) {
+    if ((buf[0] === 0xFF && buf[1] === 0xFE) || (buf[0] === 0xFE && buf[1] === 0xFF)) {
+      return false;
     }
   }
-  return matches.join("\n") || "(no matches)";
+  // Check for null bytes (classic binary indicator)
+  return buf.includes(0);
 }
 
 async function toolListDir(args: any, workDir: string): Promise<string> {
   const dirPath = args.path ? resolve(workDir, args.path) : workDir;
   if (!existsSync(dirPath)) return `Error: Directory not found: ${args.path || "."}`;
 
-  const entries = readdirSync(dirPath);
+  const showHidden = args.show_hidden !== false; // default true
+  const maxDepth = Math.min(Math.max(args.depth || 1, 1), 5);
   const lines: string[] = [];
 
-  for (const entry of entries.sort()) {
+  function listRecursive(dir: string, prefix: string, depth: number, ancestorInodes: Set<number>): void {
+    if (lines.length >= 500) return;
+
+    // Check for symlink loops by tracking ancestor directory inodes (not globally)
+    // This correctly allows two symlinks to the same target while catching actual loops
     try {
-      const fullPath = join(dirPath, entry);
-      const stat = statSync(fullPath);
-      if (stat.isDirectory()) {
-        lines.push(`${entry}/`);
-      } else {
-        const size = stat.size;
-        const sizeStr = size < 1024 ? `${size}B`
-          : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)}K`
-          : `${(size / (1024 * 1024)).toFixed(1)}M`;
-        lines.push(`${entry}  (${sizeStr})`);
+      const dirStat = statSync(dir);
+      if (ancestorInodes.has(dirStat.ino)) {
+        lines.push(`${prefix}(symlink loop detected, skipping)`);
+        return;
       }
+      ancestorInodes = new Set(ancestorInodes); // copy so siblings don't interfere
+      ancestorInodes.add(dirStat.ino);
+    } catch { return; }
+
+    let entries: string[];
+    try {
+      entries = readdirSync(dir).sort();
     } catch {
-      lines.push(`${entry}  (unreadable)`);
+      lines.push(`${prefix}(unreadable)`);
+      return;
     }
-    if (lines.length >= 500) {
-      lines.push("... (truncated at 500 entries)");
-      break;
+
+    for (const entry of entries) {
+      if (lines.length >= 500) { lines.push("... (truncated at 500 entries)"); return; }
+      if (!showHidden && entry.startsWith(".")) continue;
+
+      try {
+        const fullPath = join(dir, entry);
+        const st = statSync(fullPath);
+        if (st.isDirectory()) {
+          lines.push(`${prefix}${entry}/`);
+          if (depth < maxDepth) {
+            listRecursive(fullPath, prefix + "  ", depth + 1, ancestorInodes);
+          }
+        } else {
+          lines.push(`${prefix}${entry}  (${formatSize(st.size)})`);
+        }
+      } catch {
+        lines.push(`${prefix}${entry}  (unreadable)`);
+      }
     }
   }
 
+  listRecursive(dirPath, "", 1, new Set());
   return lines.join("\n") || "(empty directory)";
+}
+
+async function toolStat(args: any, workDir: string): Promise<string> {
+  const filePath = resolve(workDir, args.path);
+  if (!existsSync(filePath)) return `Path: ${args.path}\nExists: false`;
+
+  try {
+    const lst = lstatSync(filePath);
+    const st = lst.isSymbolicLink() ? statSync(filePath) : lst;
+    const type = lst.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : "file";
+    const modified = new Date(st.mtimeMs).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+    const info: string[] = [
+      `Path: ${args.path}`,
+      `Exists: true`,
+      `Type: ${type}`,
+      `Size: ${formatSize(st.size)} (${st.size} bytes)`,
+      `Modified: ${modified}`,
+    ];
+    // For text files, count lines by streaming chunks (avoids loading entire file into memory)
+    if (type === "file" && st.size < 10_000_000 && st.size > 0) {
+      try {
+        const fd = Bun.file(filePath);
+        const stream = fd.stream();
+        let lineCount = 0;
+        let lastByte = 0;
+        let isBinary = false;
+        for await (const chunk of stream) {
+          const buf = Buffer.from(chunk);
+          if (hasBinaryBytes(buf)) { isBinary = true; break; }
+          for (let i = 0; i < buf.length; i++) {
+            if (buf[i] === 0x0a) lineCount++;
+          }
+          if (buf.length > 0) lastByte = buf[buf.length - 1];
+        }
+        if (isBinary) {
+          info.push(`Binary: true`);
+        } else {
+          // If file ends with \n, lineCount is correct (each \n terminates a line)
+          // If file doesn't end with \n, add 1 for the unterminated last line
+          const total = lastByte === 0x0a ? lineCount : lineCount + 1;
+          info.push(`Lines: ${total}`);
+        }
+      } catch {}
+    }
+    return info.join("\n");
+  } catch (err) {
+    return `Path: ${args.path}\nError: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function toolPatch(args: any, workDir: string): Promise<string> {
@@ -448,26 +673,38 @@ async function toolPatch(args: any, workDir: string): Promise<string> {
   if (!existsSync(filePath)) return `Error: File not found: ${args.file_path}`;
   if (!Array.isArray(args.edits) || args.edits.length === 0) return "Error: edits array is empty";
 
-  let content = readFileSync(filePath, "utf-8");
+  // Atomic: apply all edits to a copy first. Only write to disk if ALL succeed.
+  const original = readFileSync(filePath, "utf-8");
+  let content = original;
   const results: string[] = [];
+  let hasError = false;
 
   for (let i = 0; i < args.edits.length; i++) {
     const edit = args.edits[i];
     if (!edit.old_string || edit.new_string === undefined) {
       results.push(`Edit ${i + 1}: Error — missing old_string or new_string`);
-      continue;
+      hasError = true;
+      break; // stop on first error
     }
     const idx = content.indexOf(edit.old_string);
     if (idx === -1) {
       results.push(`Edit ${i + 1}: Error — old_string not found`);
-      continue;
+      hasError = true;
+      break;
     }
     if (content.indexOf(edit.old_string, idx + edit.old_string.length) !== -1) {
       results.push(`Edit ${i + 1}: Error — old_string is not unique`);
-      continue;
+      hasError = true;
+      break;
     }
     content = content.slice(0, idx) + edit.new_string + content.slice(idx + edit.old_string.length);
     results.push(`Edit ${i + 1}: OK`);
+  }
+
+  if (hasError) {
+    // No file written — all-or-nothing
+    results.push(`\nPatch ABORTED — no changes written to disk. Fix the failing edit and retry.`);
+    return results.join("\n");
   }
 
   writeFileSync(filePath, content);
@@ -475,6 +712,7 @@ async function toolPatch(args: any, workDir: string): Promise<string> {
 }
 
 async function toolWebFetch(args: any): Promise<string> {
+  const maxBytes = Math.min(args.max_bytes || 500_000, 2_000_000); // cap at 2MB regardless
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
@@ -486,7 +724,29 @@ async function toolWebFetch(args: any): Promise<string> {
         "Accept-Language": "en-US,en;q=0.9",
       },
     });
-    let text = await resp.text();
+
+    // Stream-read with byte cap to avoid downloading huge pages into memory
+    const reader = resp.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    let wasTruncated = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.length;
+      if (totalBytes > maxBytes) {
+        // Keep only what fits
+        const excess = totalBytes - maxBytes;
+        chunks.push(value.slice(0, value.length - excess));
+        wasTruncated = true;
+        reader.cancel();
+        break;
+      }
+      chunks.push(value);
+    }
+    const decoder = new TextDecoder();
+    let text = chunks.map(c => decoder.decode(c, { stream: true })).join("") + decoder.decode();
+
     const contentType = resp.headers.get("content-type") || "";
 
     // Convert HTML to readable text unless raw mode requested
@@ -494,8 +754,12 @@ async function toolWebFetch(args: any): Promise<string> {
       text = htmlToText(text);
     }
 
-    if (text.length > 50_000) {
-      return text.slice(0, 50_000) + "\n... (truncated)";
+    // Apply text-level cap (HTML→text conversion may shrink content substantially)
+    const textCap = 50_000;
+    if (text.length > textCap) {
+      text = text.slice(0, textCap) + `\n... (truncated to ${textCap} chars — use max_bytes for finer control)`;
+    } else if (wasTruncated) {
+      text += `\n... (download capped at ${(maxBytes / 1024).toFixed(0)}KB — use max_bytes to adjust)`;
     }
     return text || "(empty response)";
   } finally {
@@ -504,7 +768,7 @@ async function toolWebFetch(args: any): Promise<string> {
 }
 
 /** Convert HTML to clean readable text, stripping boilerplate */
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   // Remove entire blocks that are noise
   let text = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -519,13 +783,13 @@ function htmlToText(html: string): string {
   // Convert structural elements to line breaks
   text = text
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/?(p|div|section|article|main|aside|blockquote|figure|figcaption|details|summary)[^>]*>/gi, "\n")
-    .replace(/<\/?(h[1-6])[^>]*>/gi, "\n")
-    .replace(/<\/?li[^>]*>/gi, "\n")
-    .replace(/<\/?tr[^>]*>/gi, "\n")
-    .replace(/<\/?td[^>]*>/gi, "\t")
-    .replace(/<\/?th[^>]*>/gi, "\t")
-    .replace(/<\/?(ul|ol|table|thead|tbody|tfoot)[^>]*>/gi, "\n");
+    .replace(/<\/?(p|div|section|article|main|aside|blockquote|figure|figcaption|details|summary)\b[^>]*>/gi, "\n")
+    .replace(/<\/?(h[1-6])\b[^>]*>/gi, "\n")
+    .replace(/<\/?li\b[^>]*>/gi, "\n")
+    .replace(/<\/?tr\b[^>]*>/gi, "\n")
+    .replace(/<\/?td\b[^>]*>/gi, "\t")
+    .replace(/<\/?th\b[^>]*>/gi, "\t")
+    .replace(/<\/?(ul|ol|table|thead|tbody|tfoot)\b[^>]*>/gi, "\n");
 
   // Convert links: <a href="url">text</a> → text (url)
   text = text.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
@@ -594,7 +858,7 @@ async function toolWebSearch(args: any): Promise<string> {
   }
 }
 
-function parseDDGResults(html: string, maxResults: number): string {
+export function parseDDGResults(html: string, maxResults: number): string {
   const results: Array<{ title: string; url: string; snippet: string }> = [];
 
   // Extract result blocks — each contains a result__a link and a result__snippet
@@ -646,7 +910,7 @@ function parseDDGResults(html: string, maxResults: number): string {
   ).join("\n\n");
 }
 
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     .replace(/<[^>]*>/g, "")     // strip tags
     .replace(/&amp;/g, "&")
@@ -778,6 +1042,7 @@ export function createOpenAIManager(config: Config): LLMManager {
   const model = config.model || ep.model || "default";
   const apiKey = ep.apiKey || "";
   const label = config.backend;
+  const maxContextChars = ep.maxContextChars || DEFAULT_MAX_CONTEXT_CHARS;
 
   function emitActivity(line: string): void {
     for (const cb of activityCallbacks) cb(line);
@@ -825,6 +1090,65 @@ export function createOpenAIManager(config: Config): LLMManager {
     return processStreamingResponse(response, emitChunk, signal);
   }
 
+  /** Estimate total character count of all messages (content + tool call args) */
+  function estimateContextSize(messages: any[]): number {
+    let total = 0;
+    for (const m of messages) {
+      if (typeof m.content === "string") {
+        total += m.content.length;
+      } else if (Array.isArray(m.content)) {
+        for (const part of m.content) {
+          if (typeof part === "string") total += part.length;
+          else if (part?.text) total += part.text.length;
+        }
+      }
+      if (m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          total += (tc.function?.arguments?.length || 0);
+          total += (tc.function?.name?.length || 0);
+        }
+      }
+    }
+    // Account for tool definitions overhead (~500 chars per tool definition on average)
+    const toolCount = (TOOLS_BY_MODE[config.mode] || "").split(",").filter(Boolean).length;
+    total += toolCount * 500;
+    return total;
+  }
+
+  /**
+   * Trim old tool results AND long assistant responses to keep context within budget.
+   * Preserves the most recent turn (so the model sees what it just did).
+   */
+  function trimOldContent(messages: any[]): void {
+    const size = estimateContextSize(messages);
+    if (size <= maxContextChars) return;
+
+    // Find the last assistant message index — don't trim anything after it
+    let lastAssistantIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") { lastAssistantIdx = i; break; }
+    }
+
+    let trimmed = 0;
+    for (let i = 0; i < messages.length && i < lastAssistantIdx; i++) {
+      const m = messages[i];
+      // Trim old tool results
+      if (m.role === "tool" && typeof m.content === "string" && m.content.length > 200) {
+        trimmed += m.content.length - TRIMMED_STUB.length;
+        m.content = TRIMMED_STUB;
+      }
+      // Trim long assistant responses (keep first 200 chars as summary hint)
+      if (m.role === "assistant" && typeof m.content === "string" && m.content.length > 1000) {
+        const preview = m.content.slice(0, 200);
+        trimmed += m.content.length - preview.length - TRIMMED_ASSISTANT_STUB.length - 1;
+        m.content = preview + "\n" + TRIMMED_ASSISTANT_STUB;
+      }
+    }
+    if (trimmed > 0) {
+      console.log(`[${label}] Trimmed ${(trimmed / 1024).toFixed(0)}KB from old content to stay within context budget (limit: ${(maxContextChars / 1024).toFixed(0)}KB)`);
+    }
+  }
+
   async function runAgentLoop(text: string, promptFile?: string): Promise<string> {
     let systemPrompt = "";
     if (promptFile) {
@@ -839,12 +1163,16 @@ export function createOpenAIManager(config: Config): LLMManager {
     const signal = abortController!.signal;
     let accumulatedText = "";
     let turns = 0;
+    let rateLimitRetried = false;
 
     while (turns < MAX_TURNS) {
       turns++;
       lastActivityAt = Date.now();
 
       if (signal.aborted) return accumulatedText || "[Request cancelled]";
+
+      // Proactively trim old tool results if context is getting large
+      trimOldContent(messages);
 
       let result: TurnResult;
       try {
@@ -854,11 +1182,41 @@ export function createOpenAIManager(config: Config): LLMManager {
 
         const status = err?.status as number | undefined;
         if (status === 429) {
-          // Rate limit — emit callback but don't retry here (let it bubble)
+          if (!rateLimitRetried) {
+            // Parse retry-after header if the API sent it, otherwise default to 30s
+            const retryAfterMatch = err.message?.match(/retry.after[:\s]*(\d+)/i);
+            const waitMs = retryAfterMatch ? parseInt(retryAfterMatch[1]) * 1000 : RATE_LIMIT_RETRY_DELAY;
+            const waitSec = Math.ceil(waitMs / 1000);
+            console.log(`[${label}] Rate limited — waiting ${waitSec}s before retry`);
+            emitActivity(`⏳ Rate limited, retrying in ${waitSec}s...`);
+            for (const cb of rateLimitCallbacks) cb(waitMs, 1);
+            rateLimitRetried = true;
+            await new Promise(r => setTimeout(r, waitMs));
+            if (signal.aborted) return accumulatedText || "[Request cancelled]";
+            continue; // retry the turn
+          }
+          // Already retried once — give up
           return accumulatedText || `[Rate limited: ${err.message}]`;
         }
         if (status && status >= 500) {
           return accumulatedText || `[API Error: ${err.message}]`;
+        }
+        if (status === 400) {
+          // 400 usually means context too long after many tool calls.
+          // Try aggressive trimming first, then retry once.
+          const hasToolResults = messages.some(m => m.role === "tool" && m.content !== TRIMMED_STUB);
+          if (hasToolResults) {
+            console.log(`[${label}] Got 400 (likely context limit) — aggressively trimming all old tool results and retrying`);
+            for (const m of messages) {
+              if (m.role === "tool" && typeof m.content === "string" && m.content !== TRIMMED_STUB) {
+                m.content = TRIMMED_STUB;
+              }
+            }
+            continue; // retry the loop with trimmed context
+          }
+          // Already trimmed everything — give up
+          const hint = err.message?.includes("validation") ? " (context/token limit — even after trimming)" : "";
+          return accumulatedText || `[API Error${hint}: ${err.message}]`;
         }
         throw err;
       }
@@ -904,8 +1262,29 @@ export function createOpenAIManager(config: Config): LLMManager {
           emitActivity(`🔧 ${detail}`);
           for (const cb of toolUseCallbacks) cb(trackingDetail);
 
-          const toolResult = await executeTool(tc.name, args, config.workDir);
+          let toolResult = await executeTool(tc.name, args, config.workDir);
           lastActivityAt = Date.now();
+
+          // Cap individual tool results to prevent a single Read from blowing out context
+          if (toolResult.length > MAX_TOOL_RESULT_CHARS) {
+            console.log(`[${label}] Capping ${tc.name} result from ${(toolResult.length / 1024).toFixed(0)}KB to ${(MAX_TOOL_RESULT_CHARS / 1024).toFixed(0)}KB`);
+            // Truncate at line boundary instead of mid-line
+            let cutAt = toolResult.lastIndexOf("\n", MAX_TOOL_RESULT_CHARS);
+            if (cutAt < MAX_TOOL_RESULT_CHARS * 0.5) cutAt = MAX_TOOL_RESULT_CHARS; // fallback if lines are very long
+            const totalLines = toolResult.split("\n").length;
+            const shownLines = toolResult.slice(0, cutAt).split("\n").length;
+            // Tool-specific truncation hints
+            let hint: string;
+            switch (tc.name) {
+              case "Read": hint = "Use offset/limit to read specific sections."; break;
+              case "Grep": hint = "Use output_mode='files' for just filenames, or narrow with glob/type/path. Use head_limit to cap total output."; break;
+              case "Bash": hint = "Pipe through head/tail or redirect to a file if you need the full output."; break;
+              case "ListDirectory": hint = "Reduce depth or target a more specific subdirectory."; break;
+              case "WebFetch": hint = "The page is very large. Try searching for specific content instead."; break;
+              default: hint = "Consider a more targeted query to reduce output size."; break;
+            }
+            toolResult = toolResult.slice(0, cutAt) + `\n\n⚠️ [Output truncated — showing ~${shownLines} of ${totalLines} lines (${(cutAt / 1024).toFixed(0)}KB of ${(toolResult.length / 1024).toFixed(0)}KB). ${hint}]`;
+          }
 
           messages.push({
             role: "tool",

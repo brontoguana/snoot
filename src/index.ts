@@ -281,6 +281,7 @@ function handleSetupEndpoint(args: string[]): never {
   let model = "";
   let apiKey = "";
   let cli = "";
+  let maxContextChars: number | undefined;
 
   for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
@@ -288,6 +289,11 @@ function handleSetupEndpoint(args: string[]): never {
       case "--model": case "-m": model = args[++i] || ""; break;
       case "--api-key": case "--key": apiKey = args[++i] || ""; break;
       case "--cli": cli = args[++i] || ""; break;
+      case "--max-context": {
+        const val = parseInt(args[++i] || "");
+        if (!isNaN(val) && val > 0) maxContextChars = val * 1000; // specified in K chars
+        break;
+      }
       default:
         console.error(`Unknown option: ${args[i]}`);
         process.exit(1);
@@ -295,8 +301,8 @@ function handleSetupEndpoint(args: string[]): never {
   }
 
   const endpoint: EndpointConfig = url
-    ? { type: "openai", url, model: model || undefined, apiKey: apiKey || undefined }
-    : { type: "cli", cli: cli || name };
+    ? { type: "openai", url, model: model || undefined, apiKey: apiKey || undefined, maxContextChars }
+    : { type: "cli", cli: cli || name, maxContextChars };
 
   const config = loadGlobalConfig() || {} as GlobalConfig;
   if (!config.endpoints) config.endpoints = {};

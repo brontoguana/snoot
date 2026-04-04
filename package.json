@@ -1,6 +1,6 @@
 {
   "name": "snoot",
-  "version": "0.7.43",
+  "version": "0.7.44",
   "description": "Proxy encrypted messengers (Session/Matrix/SimpleX) to AI coding assistants",
   "type": "module",
   "bin": {
@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "bun src/index.ts",
-    "typecheck": "bun x tsc --noEmit"
+    "typecheck": "bun x tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2",

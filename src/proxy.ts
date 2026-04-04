@@ -71,6 +71,35 @@ export function createProxy(config: Config) {
   const watchLogPath = join(config.baseDir, "watch.log");
   const settingsPath = join(config.baseDir, "settings.json");
 
+  // -- Transport health tracking --
+  let consecutiveSendFailures = 0;
+  let lastSendSuccess = Date.now();
+  const SEND_FAILURE_LOG_THRESHOLD = 2; // log after this many consecutive failures
+  const SEND_FAILURE_WARN_THRESHOLD = 5; // warn user (via watchLog) after this many
+
+  /** Best-effort send with logging on failure. Returns true if sent, false if failed. */
+  async function safeSend(text: string): Promise<boolean> {
+    try {
+      await sessionClient.send(text);
+      if (consecutiveSendFailures > 0) {
+        console.log(`[proxy] Send recovered after ${consecutiveSendFailures} consecutive failures`);
+      }
+      consecutiveSendFailures = 0;
+      lastSendSuccess = Date.now();
+      return true;
+    } catch (err) {
+      consecutiveSendFailures++;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (consecutiveSendFailures >= SEND_FAILURE_LOG_THRESHOLD) {
+        console.error(`[proxy] Send failed (${consecutiveSendFailures} consecutive): ${msg}`);
+      }
+      if (consecutiveSendFailures === SEND_FAILURE_WARN_THRESHOLD) {
+        watchLog(`⚠️ Transport send failing (${consecutiveSendFailures}x) — messages may not be delivered`);
+      }
+      return false;
+    }
+  }
+
   /** Persist backend/model/effort so they survive restarts */
   function saveSettings(): void {
     const data: Record<string, string | number> = { backend: config.backend };
@@ -138,20 +167,16 @@ export function createProxy(config: Config) {
       const reasonShort = reason ? reason.slice(0, 120) : "rate limited";
       const msg = `⏳ ${reasonShort}\nRetrying in ${retryIn}s (attempt ${attempt}/5)\nSend /stop to cancel or /model to switch models`;
       watchLog(msg);
-      try {
-        await sessionClient.send(msg);
-      } catch {}
+      await safeSend(msg);
     });
 
     llm.onApiError(async (retryIn, attempt, maxAttempts, reason) => {
       const reasonShort = reason ? reason.slice(0, 120) : "API error";
       const msg = `⚠️ ${reasonShort}\nRetrying in ${retryIn}s (attempt ${attempt}/${maxAttempts})\nSend /stop to cancel or /model to switch models`;
       watchLog(msg);
-      try {
-        if (attempt <= maxAttempts) {
-          await sessionClient.send(msg);
-        }
-      } catch {}
+      if (attempt <= maxAttempts) {
+        await safeSend(msg);
+      }
     });
 
     llm.onChunk((text) => {
@@ -231,13 +256,13 @@ export function createProxy(config: Config) {
         "  /effort max — maximum thinking",
         "  /effort default — reset to default",
       ];
-      sessionClient.send(options.join("\n")).catch(() => {});
+      safeSend(options.join("\n"));
       return;
     }
 
     const cli = config.endpointConfig?.cli || config.backend;
     if (cli !== "claude") {
-      sessionClient.send("Effort is only supported for Claude CLI endpoints.").catch(() => {});
+      safeSend("Effort is only supported for Claude CLI endpoints.");
       return;
     }
 
@@ -245,38 +270,36 @@ export function createProxy(config: Config) {
 
     if (lower === "default" || lower === "off" || lower === "none") {
       if (config.effort === undefined) {
-        sessionClient.send("Already using default effort.").catch(() => {});
+        safeSend("Already using default effort.");
         return;
       }
       config.effort = undefined;
       if (llm.isAlive()) llm.kill();
       saveSettings();
       watchLog("🔄 Effort → default");
-      sessionClient.send("Effort reset to default. Next message will use it.").catch(() => {});
+      safeSend("Effort reset to default. Next message will use it.");
       return;
     }
 
     if (VALID_EFFORTS.includes(lower)) {
       if (config.effort === lower) {
-        sessionClient.send(`Already set to ${lower}.`).catch(() => {});
+        safeSend(`Already set to ${lower}.`);
         return;
       }
       config.effort = lower;
       if (llm.isAlive()) llm.kill();
       saveSettings();
       watchLog(`🔄 Effort → ${lower}`);
-      sessionClient.send(`Effort set to ${lower}. Next message will use it.`).catch(() => {});
+      safeSend(`Effort set to ${lower}. Next message will use it.`);
       return;
     }
 
-    sessionClient.send("Invalid effort. Use: low, medium, high, max, or default.").catch(() => {});
+    safeSend("Invalid effort. Use: low, medium, high, max, or default.");
   }
 
   async function handleBtw(question: string): Promise<void> {
     watchLog(`💬 /btw: ${question.slice(0, 200)}`);
-    try {
-      await sessionClient.send("💬 " + thinkingStatus(config));
-    } catch {}
+    await safeSend("💬 " + thinkingStatus(config));
 
     // Spawn a throwaway LLM in research mode (read-only tools, no edits)
     const btwConfig: Config = {
@@ -341,7 +364,7 @@ export function createProxy(config: Config) {
       if (curlExit !== 0 || !script.trim()) {
         const stderr = await new Response(curlProc.stderr).text();
         watchLog(`❌ /update: failed to download install script: ${stderr}`);
-        try { await sessionClient.send("Update failed: couldn't download install script."); } catch {}
+        await safeSend("Update failed: couldn't download install script.")
         return;
       }
 
@@ -362,7 +385,7 @@ export function createProxy(config: Config) {
 
       if (exitCode !== 0) {
         watchLog(`❌ /update: install script failed (exit ${exitCode}): ${stderr}`);
-        try { await sessionClient.send(`Update failed (exit ${exitCode}):\n${stderr || stdout}`); } catch {}
+        await safeSend(`Update failed (exit ${exitCode}):\n${stderr || stdout}`)
         return;
       }
 
@@ -372,7 +395,7 @@ export function createProxy(config: Config) {
       watchLog(`✅ /update: updated to ${newVersion}`);
 
       if (newVersion === `v${VERSION}`) {
-        try { await sessionClient.send(`Already on latest version (v${VERSION}).`); } catch {}
+        await safeSend(`Already on latest version (v${VERSION}).`)
         return;
       }
 
@@ -386,7 +409,7 @@ export function createProxy(config: Config) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       watchLog(`❌ /update: error: ${msg}`);
-      try { await sessionClient.send(`Update failed: ${msg}`); } catch {}
+      await safeSend(`Update failed: ${msg}`)
     }
   }
 
@@ -482,7 +505,7 @@ export function createProxy(config: Config) {
     // Find all active watch logs from the instance registry
     const instancesDir = resolve(homedir(), ".snoot", "instances");
     if (!existsSync(instancesDir)) {
-      try { await sessionClient.send("📊 No snoot instances found."); } catch {}
+      await safeSend("📊 No snoot instances found.")
       return;
     }
 
@@ -504,7 +527,7 @@ export function createProxy(config: Config) {
     }
 
     if (activeLogs.length === 0) {
-      try { await sessionClient.send("📊 No active snoots found (no watch logs modified in the last 8 hours)."); } catch {}
+      await safeSend("📊 No active snoots found (no watch logs modified in the last 8 hours).")
       return;
     }
 
@@ -560,7 +583,7 @@ export function createProxy(config: Config) {
       if (timedOut) {
         watchLog(`⚠️ /report all: ${log.channel} timed out after 3 minutes, killing`);
         reportLlm.forceKill();
-        try { await sessionClient.send(`📊 ${log.channel}: timed out.`); } catch {}
+        await safeSend(`📊 ${log.channel}: timed out.`)
         continue;
       }
 
@@ -568,11 +591,11 @@ export function createProxy(config: Config) {
         watchLog(`📊 /report all: ${log.channel} response (${response.length} chars)`);
         try {
           await sendRichResponse(`📊 ${response}`);
-        } catch {}
+        } catch (err) {
+          console.error("[proxy] Report send error:", err instanceof Error ? err.message : err);
+        }
       } else {
-        try {
-          await sessionClient.send(`📊 ${log.channel}: no report generated — log may be empty.`);
-        } catch {}
+        await safeSend(`📊 ${log.channel}: no report generated — log may be empty.`);
       }
     }
   }
@@ -751,7 +774,7 @@ export function createProxy(config: Config) {
     }
     if (pendingCliInstall && /^n(o)?$/i.test(trimmed)) {
       pendingCliInstall = false;
-      sessionClient.send("OK. Install the CLI manually and restart snoot when ready.").catch(() => {});
+      safeSend("OK. Install the CLI manually and restart snoot when ready.");
       return;
     }
 
@@ -789,7 +812,7 @@ export function createProxy(config: Config) {
         const epMsg = lines.length > 0
           ? `Endpoints:\n${lines.join("\n")}\n\nUse /endpoint <name> to switch, /endpoint add or /endpoint remove to manage.`
           : "No endpoints configured.\n\nUse /endpoint add <name> <url> <model> to add one.";
-        sessionClient.send(epMsg).catch(() => {});
+        safeSend(epMsg);
         return;
       }
 
@@ -820,7 +843,7 @@ export function createProxy(config: Config) {
           const parts = [`Endpoint "${epName}" added (openai: ${epUrl})`];
           if (epModel) parts.push(`Model: ${epModel}`);
           parts.push(`\nUse /endpoint ${epName} to switch to it.`);
-          sessionClient.send(parts.join("\n")).catch(() => {});
+          safeSend(parts.join("\n"));
         } else {
           // CLI endpoint
           const cliName = epUrl || epName; // optional second arg overrides binary name
@@ -828,7 +851,7 @@ export function createProxy(config: Config) {
           saveEndpoint(epName, ep);
           const cliPath = findCliPath(cliName);
           const status = cliPath ? `found at ${cliPath}` : "NOT found on PATH";
-          sessionClient.send(`Endpoint "${epName}" added (cli: ${cliName}, ${status})\n\nUse /endpoint ${epName} to switch to it.`).catch(() => {});
+          safeSend(`Endpoint "${epName}" added (cli: ${cliName}, ${status})\n\nUse /endpoint ${epName} to switch to it.`);
         }
         watchLog(`➕ Added endpoint: ${epName}`);
         return;
@@ -838,26 +861,26 @@ export function createProxy(config: Config) {
       if (subCmd === "remove" || subCmd === "delete" || subCmd === "rm") {
         const epName = endpointParts[1];
         if (!epName) {
-          sessionClient.send("Usage: /endpoint remove <name>").catch(() => {});
+          safeSend("Usage: /endpoint remove <name>");
           return;
         }
         if (epName === config.backend) {
-          sessionClient.send(`Can't remove "${epName}" — it's currently active. Switch to another endpoint first.`).catch(() => {});
+          safeSend(`Can't remove "${epName}" — it's currently active. Switch to another endpoint first.`);
           return;
         }
         const removed = removeEndpoint(epName);
         if (removed) {
           watchLog(`➖ Removed endpoint: ${epName}`);
-          sessionClient.send(`Endpoint "${epName}" removed.`).catch(() => {});
+          safeSend(`Endpoint "${epName}" removed.`);
         } else {
-          sessionClient.send(`No endpoint named "${epName}".`).catch(() => {});
+          safeSend(`No endpoint named "${epName}".`);
         }
         return;
       }
 
       // Otherwise: switch to the named endpoint
       watchLog(`🔄 Switching to endpoint ${endpointArg}`);
-      switchEndpoint(endpointArg).then(msg => sessionClient.send(msg).catch(() => {}));
+      switchEndpoint(endpointArg).then(msg => safeSend(msg));
       return;
     }
 
@@ -870,7 +893,7 @@ export function createProxy(config: Config) {
         const endpoints = loadEndpoints();
         if (epName in endpoints) {
           watchLog(`🔄 Switching to ${epName}`);
-          switchEndpoint(epName).then(msg => sessionClient.send(msg).catch(() => {}));
+          switchEndpoint(epName).then(msg => safeSend(msg));
           return;
         }
       }
@@ -882,7 +905,7 @@ export function createProxy(config: Config) {
       const emojiArg = emojiMatch[1].trim();
       if (!emojiArg) {
         const current = backendEmoji(config.backend, config.endpointConfig);
-        sessionClient.send(`Current emoji for ${config.backend}: ${current}\n\nUsage: /emoji <emoji> or /emoji default`).catch(() => {});
+        safeSend(`Current emoji for ${config.backend}: ${current}\n\nUsage: /emoji <emoji> or /emoji default`);
         return;
       }
       const endpoints = loadEndpoints();
@@ -894,7 +917,7 @@ export function createProxy(config: Config) {
         }
         if (config.endpointConfig) delete config.endpointConfig.emoji;
         const def = backendEmoji(config.backend, config.endpointConfig);
-        sessionClient.send(`Reset ${config.backend} emoji to default: ${def}`).catch(() => {});
+        safeSend(`Reset ${config.backend} emoji to default: ${def}`);
       } else {
         const newEmoji = emojiArg;
         if (ep) {
@@ -910,7 +933,7 @@ export function createProxy(config: Config) {
         } else {
           config.endpointConfig = { type: "cli", cli: config.backend, emoji: newEmoji };
         }
-        sessionClient.send(`Set ${config.backend} emoji to ${newEmoji}`).catch(() => {});
+        safeSend(`Set ${config.backend} emoji to ${newEmoji}`);
       }
       watchLog(`🎨 Emoji for ${config.backend}: ${backendEmoji(config.backend, config.endpointConfig)}`);
       return;
@@ -951,12 +974,12 @@ export function createProxy(config: Config) {
               "  /model <model-name>",
               "  /model default",
             ];
-        sessionClient.send(options.join("\n")).catch(() => {});
+        safeSend(options.join("\n"));
         return;
       }
       const newModel = modelArg.toLowerCase() === "default" ? undefined : modelArg;
       if (newModel === config.model) {
-        sessionClient.send(`Already using ${newModel || "default"} model.`).catch(() => {});
+        safeSend(`Already using ${newModel || "default"} model.`);
         return;
       }
       config.model = newModel;
@@ -964,7 +987,7 @@ export function createProxy(config: Config) {
       saveSettings();
       const label = newModel || "default";
       watchLog(`🔄 Model → ${label}`);
-      sessionClient.send(`Model set to ${label}. Next message will use it.`).catch(() => {});
+      safeSend(`Model set to ${label}. Next message will use it.`);
       return;
     }
 
@@ -983,18 +1006,18 @@ export function createProxy(config: Config) {
         if (autoMessage) {
           autoMessage = null;
           watchLog(`🔄 Auto mode off`);
-          sessionClient.send("Auto mode off.").catch(() => {});
+          safeSend("Auto mode off.");
         } else {
-          sessionClient.send("Auto mode is not active.").catch(() => {});
+          safeSend("Auto mode is not active.");
         }
       } else {
         autoMessage = autoArg;
         watchLog(`🔄 Auto mode on: "${autoArg}"`);
-        sessionClient.send(`Auto mode on. Will send "${autoArg}" after each response.\nSend /stop or /auto off to cancel.`).catch(() => {});
+        safeSend(`Auto mode on. Will send "${autoArg}" after each response.\nSend /stop or /auto off to cancel.`);
         // If idle, kick-start by injecting the auto message now
         if (!processing) {
           watchLog(`🔄 Auto: kick-starting with "${autoArg}"`);
-          sessionClient.send(`🤖 ${autoArg}`).catch(() => {});
+          safeSend(`🤖 ${autoArg}`);
           messageQueue.push(autoArg);
           processQueue();
         }
@@ -1004,32 +1027,32 @@ export function createProxy(config: Config) {
 
     // /update — self-update snoot by running the install script
     if (trimmed.toLowerCase() === "/update") {
-      handleUpdate();
+      handleUpdate().catch(err => console.error("[proxy] /update error:", err));
       return;
     }
 
     // /report — progress report from watch logs (bypass queue)
     if (trimmed.toLowerCase() === "/report all") {
-      handleReportAll();
+      handleReportAll().catch(err => console.error("[proxy] /report all error:", err));
       return;
     }
     const reportMatch = trimmed.match(/^\/report(?:\s+([\s\S]+))?$/i);
     if (reportMatch) {
-      handleReport(reportMatch[1]?.trim() || undefined);
+      handleReport(reportMatch[1]?.trim() || undefined).catch(err => console.error("[proxy] /report error:", err));
       return;
     }
 
     // /btw — side question in a separate process (bypass queue)
     const btwMatch = trimmed.match(/^\/btw\s+([\s\S]+)/i);
     if (btwMatch) {
-      handleBtw(btwMatch[1].trim());
+      handleBtw(btwMatch[1].trim()).catch(err => console.error("[proxy] /btw error:", err));
       return;
     }
 
     // All slash commands bypass the queue so they respond even while LLM is busy
     // Exception: /profile <desc> goes to the LLM for avatar generation
     if (trimmed.startsWith("/") && !trimmed.match(/^\/profile\s+/i)) {
-      handleCommandDirect(msg.text);
+      handleCommandDirect(msg.text).catch(err => console.error("[proxy] Command error:", err));
       return;
     }
 
@@ -1062,7 +1085,7 @@ export function createProxy(config: Config) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       console.error("[proxy] Avatar from attachment failed:", err);
-      try { await sessionClient.send(`Avatar failed: ${msg}`); } catch {}
+      await safeSend(`Avatar failed: ${msg}`)
     }
   }
 
@@ -1122,7 +1145,7 @@ export function createProxy(config: Config) {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : "Unknown error";
       console.error("[proxy] Save file failed:", err);
-      try { await sessionClient.send(`Save failed: ${errMsg}`); } catch {}
+      await safeSend(`Save failed: ${errMsg}`)
     }
   }
 
@@ -1246,12 +1269,12 @@ export function createProxy(config: Config) {
       if (cmdResult.triggerCompaction) {
         watchLog(`📦 Compacting context (aggressive)`);
         // Send immediate feedback before compaction starts
-        try { await sessionClient.send("📦 Compacting context..."); } catch {}
+        await safeSend("📦 Compacting context...")
         const result = await context.compact(true);
         if (result) {
-          try { await sessionClient.send(`✅ Compact done. Summarized ${result.compacted} messages, ${result.remaining} remaining.`); } catch {}
+          await safeSend(`✅ Compact done. Summarized ${result.compacted} messages, ${result.remaining} remaining.`)
         } else {
-          try { await sessionClient.send("Nothing to compact."); } catch {}
+          await safeSend("Nothing to compact.")
         }
         return true; // Skip the default response send
       }
@@ -1261,9 +1284,7 @@ export function createProxy(config: Config) {
       }
     }
 
-    try {
-      await sessionClient.send(cmdResult.response);
-    } catch {}
+    await safeSend(cmdResult.response);
     return true;
   }
 
@@ -1306,7 +1327,7 @@ export function createProxy(config: Config) {
       // Auto mode: re-inject the auto message after each successful response
       if (autoMessage && messageQueue.length === 0) {
         watchLog(`🔄 Auto: injecting "${autoMessage}"`);
-        sessionClient.send(`🤖 ${autoMessage}`).catch(() => {});
+        safeSend(`🤖 ${autoMessage}`);
         messageQueue.push(autoMessage);
       }
     }
@@ -1406,7 +1427,9 @@ export function createProxy(config: Config) {
       for (const group of groups) {
         const msg = group.join("\n").trim();
         if (msg) {
-          try { await sendRichResponse(msg); } catch {}
+          try { await sendRichResponse(msg); } catch (err) {
+            console.error("[proxy] Flush send error:", err instanceof Error ? err.message : err);
+          }
         }
       }
     } finally {
@@ -1441,7 +1464,7 @@ export function createProxy(config: Config) {
     const backendName = endpointDisplayName(config.backend);
     const thinkingTimer = setTimeout(async () => {
       if (llm.isAlive()) {
-        try { await sessionClient.send(thinkingStatus(config)); } catch {}
+        await safeSend(thinkingStatus(config))
       }
     }, 5_000);
     // Flush accumulated chunks every 30s
@@ -1486,7 +1509,7 @@ export function createProxy(config: Config) {
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Unknown error";
           console.error("[proxy] Avatar conversion failed:", err);
-          try { await sessionClient.send(`Avatar failed: ${msg}`); } catch {}
+          await safeSend(`Avatar failed: ${msg}`)
         }
         return;
       }
@@ -1515,15 +1538,21 @@ export function createProxy(config: Config) {
         await sendRichResponse(response);
       } else {
         watchLog(`→ Response streamed (${textCharsSent} chars)`);
+        // If the final response is an error (e.g. openai backend failed mid-stream),
+        // send it even though some text was already streamed — otherwise the user
+        // sees partial output and then silence with no explanation.
+        if (response && response.startsWith("[Error:")) {
+          await safeSend(`⚠️ ${response}`)
+        }
       }
 
       // Notify the user that the LLM has finished
-      try { await sessionClient.send("✅ Finished"); } catch {}
+      await safeSend("✅ Finished")
     } catch (err) {
       console.error("[proxy] Post-response error:", err);
       watchLog(`⚠️ Post-response error: ${err instanceof Error ? err.message : err}`);
       // Try to notify user, but don't let this block either
-      try { await sessionClient.send("⚠️ Error delivering response. Send another message to retry."); } catch {}
+      await safeSend("⚠️ Error delivering response. Send another message to retry.")
     }
   }
 
