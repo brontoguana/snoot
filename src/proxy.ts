@@ -1,7 +1,8 @@
 import { join, resolve, extname, delimiter as PATH_DELIMITER } from "path";
-import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch, mkdirSync, renameSync, cpSync, readdirSync, statSync } from "fs";
+import { existsSync, writeFileSync, appendFileSync, readFileSync, watch as fsWatch, mkdirSync, renameSync, cpSync, readdirSync, statSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import type { Config, LLMManager, TransportClient, Backend, Mode, IncomingMessage, IncomingAttachment, EndpointConfig } from "./types.js";
+import { VERSION } from "./version.js";
 import { createSessionClient } from "./session.js";
 import { createMatrixClient } from "./matrix.js";
 import { createSimplexClient } from "./simplex.js";
@@ -322,10 +323,97 @@ export function createProxy(config: Config) {
     }
   }
 
+  async function handleUpdate(): Promise<void> {
+    watchLog(`🔄 /update: updating snoot`);
+    try {
+      await sessionClient.send(`Current version: v${VERSION}\nDownloading latest...`);
+    } catch {}
+
+    try {
+      // Download and run the install script
+      const curlProc = Bun.spawn(["curl", "-fsSL", "https://raw.githubusercontent.com/brontoguana/snoot/main/install.sh"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const script = await new Response(curlProc.stdout).text();
+      const curlExit = await curlProc.exited;
+      if (curlExit !== 0 || !script.trim()) {
+        const stderr = await new Response(curlProc.stderr).text();
+        watchLog(`❌ /update: failed to download install script: ${stderr}`);
+        try { await sessionClient.send("Update failed: couldn't download install script."); } catch {}
+        return;
+      }
+
+      // Write the script to a temp file and execute it
+      const scriptPath = join(config.baseDir, "update.sh");
+      writeFileSync(scriptPath, script);
+
+      const bashProc = Bun.spawn(["bash", scriptPath], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, HOME: homedir() },
+      });
+      const stdout = await new Response(bashProc.stdout).text();
+      const stderr = await new Response(bashProc.stderr).text();
+      const exitCode = await bashProc.exited;
+
+      try { unlinkSync(scriptPath); } catch {}
+
+      if (exitCode !== 0) {
+        watchLog(`❌ /update: install script failed (exit ${exitCode}): ${stderr}`);
+        try { await sessionClient.send(`Update failed (exit ${exitCode}):\n${stderr || stdout}`); } catch {}
+        return;
+      }
+
+      // Extract installed version from output
+      const versionMatch = stdout.match(/Installed:\s+(\S+)/);
+      const newVersion = versionMatch ? versionMatch[1] : "unknown";
+      watchLog(`✅ /update: updated to ${newVersion}`);
+
+      if (newVersion === `v${VERSION}`) {
+        try { await sessionClient.send(`Already on latest version (v${VERSION}).`); } catch {}
+        return;
+      }
+
+      try {
+        await sessionClient.send(`Updated: v${VERSION} -> ${newVersion}\nRestarting...`);
+      } catch {}
+
+      // Give the message time to send, then restart
+      await new Promise(r => setTimeout(r, 1000));
+      process.exit(0); // daemon will respawn with new binary
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      watchLog(`❌ /update: error: ${msg}`);
+      try { await sessionClient.send(`Update failed: ${msg}`); } catch {}
+    }
+  }
+
   async function handleReport(userQuestion?: string): Promise<void> {
     watchLog(`📊 /report: generating progress report`);
+
+    // Prepend LLM status (what /update used to show)
+    const status = llm.getStatus();
+    const name = endpointDisplayName(config.backend);
+    const statusParts: string[] = [];
+    if (!status.alive) {
+      statusParts.push(`${name}: idle`);
+    } else {
+      const now = Date.now();
+      const ago = (ts: number) => {
+        const secs = Math.floor((now - ts) / 1000);
+        if (secs < 60) return `${secs}s ago`;
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `${mins}m ${secs % 60}s ago`;
+        return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
+      };
+      statusParts.push(`${name}: processing`);
+      if (status.spawnedAt) statusParts.push(`Started: ${ago(status.spawnedAt)}`);
+      if (status.lastActivityAt) statusParts.push(`Last activity: ${ago(status.lastActivityAt)}`);
+    }
+
     try {
-      await sessionClient.send("📊 Generating report...");
+      await sessionClient.send(`${statusParts.join("\n")}\n\n📊 Generating report...`);
     } catch {}
 
     // Spawn a throwaway LLM in research mode so it can read the watch log
@@ -772,12 +860,19 @@ export function createProxy(config: Config) {
       return;
     }
 
-    // /claude, /gemini, /codex — shortcuts for /endpoint <name>
-    if (trimmed.toLowerCase() === "/claude" || trimmed.toLowerCase() === "/gemini" || trimmed.toLowerCase() === "/codex") {
-      const name = trimmed.toLowerCase().slice(1);
-      watchLog(`🔄 Switching to ${name}`);
-      switchEndpoint(name).then(msg => sessionClient.send(msg).catch(() => {}));
-      return;
+    // /claude, /gemini, /codex, /kimi, /glm, etc. — shortcuts for /endpoint <name>
+    // Any single-word slash command matching a configured endpoint name works as a switch
+    {
+      const epCmd = trimmed.match(/^\/(\S+)$/i);
+      if (epCmd) {
+        const epName = epCmd[1].toLowerCase();
+        const endpoints = loadEndpoints();
+        if (epName in endpoints) {
+          watchLog(`🔄 Switching to ${epName}`);
+          switchEndpoint(epName).then(msg => sessionClient.send(msg).catch(() => {}));
+          return;
+        }
+      }
     }
 
     // /model — switch model (bypass queue)
@@ -863,6 +958,12 @@ export function createProxy(config: Config) {
           processQueue();
         }
       }
+      return;
+    }
+
+    // /update — self-update snoot by running the install script
+    if (trimmed.toLowerCase() === "/update") {
+      handleUpdate();
       return;
     }
 

@@ -3,9 +3,18 @@ import { resolve, dirname } from "path";
 import { homedir } from "os";
 import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
 import { VERSION } from "./version.js";
-import { endpointDisplayName } from "./utils.js";
+import { endpointDisplayName, loadEndpoints } from "./utils.js";
 
 const VALID_MODES: Mode[] = ["chat", "research", "coding"];
+
+// All built-in command names (without leading /) — used to detect conflicts with endpoint names
+const RESERVED_COMMANDS = new Set([
+  "help", "boop", "hi", "status", "context", "mode", "window",
+  "pin", "pins", "unpin", "profile", "save", "overwrite", "rename",
+  "move", "relocate", "stop", "kill", "compact", "restart", "forget",
+  "clear", "claude", "gemini", "codex", "model", "effort", "update",
+  "endpoint", "auto", "report", "btw",
+]);
 
 export function handleCommand(
   text: string,
@@ -34,7 +43,7 @@ export function handleCommand(
           "  /context — show summary, pins, recent activity",
           "",
           "LLM",
-          "  /claude /gemini /codex — switch backend",
+          "  /<name> — switch to any endpoint (e.g. /claude /kimi /glm)",
           "  /endpoint [name] — switch or list endpoints",
           "  /model <name> — switch model (opus, sonnet, etc.)",
           "  /effort <level> — low/medium/high/max/default",
@@ -59,6 +68,7 @@ export function handleCommand(
           "  /rename <name> — change display name",
           "  /move <name> — move to new channel",
           "  /relocate <path> — change working directory",
+          "  /update — update snoot to latest version",
           "  /auto <msg> — auto-send msg after each response",
           "  /auto off — cancel auto mode",
           "  /stop — cancel current request (+ auto mode)",
@@ -79,8 +89,7 @@ export function handleCommand(
       };
 
     case "/boop":
-    case "/hi":
-    case "/update": {
+    case "/hi": {
       const status = llm.getStatus();
       const name = endpointDisplayName(config.backend);
       if (!status.alive) {
@@ -419,11 +428,22 @@ export function handleCommand(
     case "/codex":
     case "/model":
     case "/effort":
+    case "/update":
       return null;
 
-    default:
+    default: {
+      // Dynamic endpoint shortcut: /kimi, /glm, etc. — pass through to proxy.ts
+      // unless it conflicts with a built-in command name
+      const cmdName = cmd.slice(1).toLowerCase();
+      if (!RESERVED_COMMANDS.has(cmdName)) {
+        const endpoints = loadEndpoints();
+        if (cmdName in endpoints) {
+          return null; // let proxy.ts handle the switch
+        }
+      }
       return {
         response: `Unknown command: ${cmd}. Type /help for available commands.`,
       };
+    }
   }
 }
