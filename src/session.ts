@@ -104,8 +104,17 @@ export async function createSessionClient(config: Config): Promise<TransportClie
 
   async function startListening(onMessage: (msg: IncomingMessage) => void): Promise<void> {
     const startedAt = Date.now();
+    let lastPollerActivity = Date.now(); // Track when poller was last known alive
+    let lastPollerRestart = Date.now(); // Track when poller was last restarted
     const seenTimestamps = new Map<number, number>(); // timestamp → time first seen
     const SEEN_MAX_AGE = 5 * 60_000; // prune entries older than 5 minutes
+    const WATCHDOG_CHECK_INTERVAL = 5 * 60_000; // check every 5 minutes
+    const WATCHDOG_STALE_THRESHOLD = 10 * 60_000; // stale after 10 minutes of no activity
+    const WATCHDOG_HARD_RESTART = 4 * 60 * 60_000; // force restart every 4 hours regardless
+
+    function markPollerAlive() {
+      lastPollerActivity = Date.now();
+    }
 
     // Periodically prune old entries so the map doesn't grow forever
     const pruneTimer = setInterval(() => {
@@ -121,11 +130,26 @@ export async function createSessionClient(config: Config): Promise<TransportClie
     const POLLER_RETRY_DELAYS = [5, 10, 15, 30, 30, 60, 60, 60, 120, 120, 120, 300]; // seconds
 
     async function connectPoller(reason: string): Promise<void> {
+      // Stop and remove any existing pollers before adding a new one
+      try {
+        const pollers = (session as any).pollers as Set<any> | undefined;
+        if (pollers && pollers.size > 0) {
+          const count = pollers.size;
+          for (const p of pollers) {
+            try { p.stopPolling(); } catch {}
+          }
+          pollers.clear();
+          console.log(`[session] Cleared ${count} poller(s) before reconnect`);
+        }
+      } catch {}
+
       let connected = false;
       for (let attempt = 0; !connected; attempt++) {
         try {
           session.addPoller(new Poller());
           connected = true;
+          markPollerAlive();
+          lastPollerRestart = Date.now();
           if (attempt > 0) {
             console.log(`[session] Poller connected after ${attempt + 1} attempts (${reason})`);
           }
@@ -153,22 +177,60 @@ export async function createSessionClient(config: Config): Promise<TransportClie
     let reconnecting = false;
     process.on("unhandledRejection", (reason) => {
       const msg = reason instanceof Error ? reason.message : String(reason);
-      if (/swarm|polling/i.test(msg) && !reconnecting) {
-        reconnecting = true;
-        console.log(`[session] Poller died (${msg}) — reconnecting...`);
-        // Wait before reconnecting to let the network recover
-        setTimeout(async () => {
-          try {
-            await connectPoller("recovery");
-            console.log("[session] Poller recovered successfully");
-          } catch (err) {
-            console.error("[session] Poller recovery failed:", err);
-          } finally {
-            reconnecting = false;
-          }
-        }, 30_000); // Wait 30s before first reconnect attempt
+      const isSessionError = /swarm|polling|snode|fetch|session/i.test(msg)
+        || reason?.constructor?.name?.includes("Session");
+      if (isSessionError) {
+        markPollerAlive(); // Error = poller was alive (it threw something)
+        if (/swarm|polling/i.test(msg)) {
+          console.error(`ERROR: [session] Network rejection (non-fatal, will retry): ${msg}`);
+        } else {
+          console.error(`ERROR: [session] Unhandled rejection: ${msg}`);
+        }
+        if (!reconnecting) {
+          reconnecting = true;
+          console.log(`[session] Poller died (${msg}) — reconnecting...`);
+          // Wait before reconnecting to let the network recover
+          setTimeout(async () => {
+            try {
+              await connectPoller("recovery");
+              console.log("[session] Poller recovered successfully");
+            } catch (err) {
+              console.error("[session] Poller recovery failed:", err);
+            } finally {
+              reconnecting = false;
+            }
+          }, 30_000); // Wait 30s before first reconnect attempt
+        }
       }
     });
+
+    // Watchdog: detect silently-dead poller (no errors, no messages for too long)
+    // and also force-restart periodically as a safety net.
+    const watchdogTimer = setInterval(async () => {
+      if (reconnecting) return; // already recovering, don't interfere
+
+      const sinceLast = Date.now() - lastPollerActivity;
+      const sinceRestart = Date.now() - lastPollerRestart;
+      const stale = sinceLast > WATCHDOG_STALE_THRESHOLD;
+      const overdue = sinceRestart > WATCHDOG_HARD_RESTART;
+
+      if (stale || overdue) {
+        const reason = stale
+          ? `no activity for ${Math.round(sinceLast / 60_000)}m`
+          : `scheduled restart (${Math.round(sinceRestart / 3600_000)}h since last)`;
+        console.log(`[session] Watchdog: restarting poller (${reason})`);
+        reconnecting = true;
+        try {
+          await connectPoller("watchdog");
+          console.log("[session] Watchdog: poller restarted successfully");
+        } catch (err) {
+          console.error("[session] Watchdog: poller restart failed:", err);
+        } finally {
+          reconnecting = false;
+        }
+      }
+    }, WATCHDOG_CHECK_INTERVAL);
+    if (watchdogTimer.unref) watchdogTimer.unref();
 
     // Re-upload avatar in background so the file server URL stays fresh.
     // The metadata restore above covers the immediate need (first messages),
@@ -195,6 +257,8 @@ export async function createSessionClient(config: Config): Promise<TransportClie
     }
 
     session.on("message", (message: any) => {
+      markPollerAlive(); // Any message (even filtered) proves poller is alive
+
       // Only accept messages from the configured user
       if (message.from !== config.userId) {
         return;
