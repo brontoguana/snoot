@@ -7,6 +7,8 @@ const MAX_TURNS = 50;
 const RATE_LIMIT_RETRY_DELAY = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
 const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
+const API_REQUEST_TIMEOUT = 120_000;    // 120s timeout per API request
+const MAX_API_RETRIES = 2;             // Retry up to 2 times on timeout/network errors
 const MAX_TOOL_RESULT_CHARS = 30_000;   // Cap individual tool results
 const DEFAULT_MAX_CONTEXT_CHARS = 400_000; // Start trimming old content above this
 const TRIMMED_STUB = "[Content trimmed to save context — re-read the file if needed]";
@@ -922,6 +924,75 @@ export function stripHtml(html: string): string {
     .replace(/\s+/g, " ");       // collapse whitespace
 }
 
+// -- Fetch with timeout and retry --
+
+/**
+ * Shared fetch wrapper with per-request timeout and retry on timeout/network errors.
+ * Used by both the agent loop's apiRequest and compaction.
+ * @param url - The URL to fetch
+ * @param init - Fetch init options (headers, body, etc.)
+ * @param opts.signal - Optional external abort signal (e.g. from /stop)
+ * @param opts.label - Label for logging
+ * @param opts.timeoutMs - Per-request timeout (default 120s)
+ * @param opts.maxRetries - Max retries on timeout/network error (default 2)
+ * @returns The fetch Response
+ */
+export async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { signal?: AbortSignal; label?: string; timeoutMs?: number; maxRetries?: number } = {},
+): Promise<Response> {
+  const { signal, label = "api", timeoutMs = API_REQUEST_TIMEOUT, maxRetries = MAX_API_RETRIES } = opts;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    // Create a per-request timeout that also respects the external signal
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), timeoutMs);
+
+    // If external signal fires, abort our timeout controller too
+    const onExternalAbort = () => timeoutController.abort();
+    signal?.addEventListener("abort", onExternalAbort, { once: true });
+
+    try {
+      const response = await fetch(url, { ...init, signal: timeoutController.signal });
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onExternalAbort);
+      return response;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onExternalAbort);
+
+      // If the external signal aborted, don't retry
+      if (signal?.aborted) throw err;
+
+      // Classify error: timeout vs network vs other
+      const isTimeout = err.name === "AbortError" || err.name === "TimeoutError" ||
+        err.message?.includes("timed out") || err.message?.includes("timeout");
+      const isNetwork = err.code === "ECONNRESET" || err.code === "ECONNREFUSED" ||
+        err.code === "ETIMEDOUT" || err.code === "EPIPE" || err.message?.includes("fetch failed");
+
+      if ((isTimeout || isNetwork) && attempt < maxRetries) {
+        const waitSec = 5 * (attempt + 1); // 5s, 10s
+        console.log(`[${label}] Request ${isTimeout ? "timed out" : "failed"} (attempt ${attempt + 1}/${maxRetries + 1}) — retrying in ${waitSec}s`);
+        lastError = err;
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+
+      // Not retryable or out of retries
+      if (lastError && (isTimeout || isNetwork)) {
+        throw new Error(`Request failed after ${attempt + 1} attempts: ${err.message}`);
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error("fetchWithRetry exhausted retries");
+}
+
 // -- Streaming SSE parser --
 
 interface ToolCallAccumulator {
@@ -1063,31 +1134,75 @@ export function createOpenAIManager(config: Config): LLMManager {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    });
+    // Create a request-scoped abort controller for stream stall timeout.
+    // This lets us kill a stalled stream without aborting the entire agent loop.
+    const requestController = new AbortController();
+    const onExternalAbort = () => requestController.abort();
+    signal.addEventListener("abort", onExternalAbort, { once: true });
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      const err = new Error(`${response.status}: ${errorText.slice(0, 500)}`);
-      (err as any).status = response.status;
-      throw err;
-    }
+    // Stream stall timer — resets on each chunk. If no data for 120s, abort.
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        console.log(`[${label}] Stream stalled (no data for ${API_REQUEST_TIMEOUT / 1000}s) — aborting request`);
+        requestController.abort();
+      }, API_REQUEST_TIMEOUT);
+    };
+    const clearStallTimer = () => { if (stallTimer) clearTimeout(stallTimer); };
 
-    // Detect response format: SSE vs plain JSON
-    const contentType = response.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const json = await response.json();
-      const result = parseNonStreamingResponse(json);
-      if (result.content) emitChunk(result.content);
+    try {
+      // Start the stall timer — covers the initial fetch + response start
+      resetStallTimer();
+
+      const response = await fetchWithRetry(
+        `${baseUrl}/chat/completions`,
+        { method: "POST", headers, body: JSON.stringify(body) },
+        { signal: requestController.signal, label },
+      );
+
+      if (!response.ok) {
+        clearStallTimer();
+        const errorText = await response.text().catch(() => "");
+        const err = new Error(`${response.status}: ${errorText.slice(0, 500)}`);
+        (err as any).status = response.status;
+        throw err;
+      }
+
+      // Detect response format: SSE vs plain JSON
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        clearStallTimer();
+        const json = await response.json();
+        const result = parseNonStreamingResponse(json);
+        if (result.content) emitChunk(result.content);
+        return result;
+      }
+
+      // For streaming: reset stall timer on each chunk so active streams aren't killed.
+      // Only truly stalled streams (no data for 120s) will timeout.
+      const wrappedChunk = (text: string) => {
+        resetStallTimer();
+        emitChunk(text);
+      };
+
+      const result = await processStreamingResponse(response, wrappedChunk, requestController.signal);
+      clearStallTimer();
       return result;
+    } catch (err: any) {
+      clearStallTimer();
+      signal.removeEventListener("abort", onExternalAbort);
+      // If our request-scoped controller aborted (stall timeout) but the external
+      // signal is still alive, convert to a retriable timeout error
+      if (requestController.signal.aborted && !signal.aborted) {
+        const timeoutErr = new Error(`Request timed out (no data for ${API_REQUEST_TIMEOUT / 1000}s)`);
+        (timeoutErr as any).isTimeout = true;
+        throw timeoutErr;
+      }
+      throw err;
+    } finally {
+      signal.removeEventListener("abort", onExternalAbort);
     }
-
-    // Default: treat as SSE stream
-    return processStreamingResponse(response, emitChunk, signal);
   }
 
   /** Estimate total character count of all messages (content + tool call args) */
@@ -1164,6 +1279,7 @@ export function createOpenAIManager(config: Config): LLMManager {
     let accumulatedText = "";
     let turns = 0;
     let rateLimitRetried = false;
+    let timeoutRetries = 0;
 
     while (turns < MAX_TURNS) {
       turns++;
@@ -1177,8 +1293,21 @@ export function createOpenAIManager(config: Config): LLMManager {
       let result: TurnResult;
       try {
         result = await apiRequest(messages, tools, signal);
+        timeoutRetries = 0; // Reset on success
       } catch (err: any) {
         if (signal.aborted) return accumulatedText || "[Request cancelled]";
+
+        // Handle stream stall timeouts — retry up to MAX_API_RETRIES times
+        if (err.isTimeout && timeoutRetries < MAX_API_RETRIES) {
+          timeoutRetries++;
+          console.log(`[${label}] Stream timeout — retry ${timeoutRetries}/${MAX_API_RETRIES}`);
+          emitActivity(`⏳ Request timed out, retrying (${timeoutRetries}/${MAX_API_RETRIES})...`);
+          // Need a fresh abort controller since the old request-scoped one was aborted
+          continue; // retry the turn
+        }
+        if (err.isTimeout) {
+          return accumulatedText || `[Request timed out after ${MAX_API_RETRIES + 1} attempts]`;
+        }
 
         const status = err?.status as number | undefined;
         if (status === 429) {

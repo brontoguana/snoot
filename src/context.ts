@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync } from "fs";
 import { join, relative, basename } from "path";
-import type { Config, ContextStore, ContextState, MessagePair, PinnedItem, RecentCommand } from "./types.js";
+import type { Config, ContextStore, ContextState, EndpointConfig, MessagePair, PinnedItem, RecentCommand } from "./types.js";
+import { fetchWithRetry } from "./openai.js";
 
 const ARCHIVE_RETENTION_DAYS = 30;
 
@@ -435,8 +436,7 @@ export function createContextStore(config: Config): ContextStore {
     return input;
   }
 
-  async function runCompaction(input: string): Promise<string> {
-    const prompt = `You are compacting conversation history for an LLM that will continue this work in a future session. The LLM cannot see these messages — only your summary. Write high-signal notes that help it pick up where things left off.
+  const COMPACTION_SYSTEM_PROMPT = `You are compacting conversation history for an LLM that will continue this work in a future session. The LLM cannot see these messages — only your summary. Write high-signal notes that help it pick up where things left off.
 
 Write ONLY what a new session needs to know:
 - Decisions made and WHY (the reasoning matters more than the action)
@@ -453,9 +453,60 @@ Do NOT include:
 - Things that are obvious from reading the current code
 - Alternatives that were discussed then rejected (unless the rejection reason is important)
 
-Keep it concise. A few dense paragraphs are better than an exhaustive log. If there is a current summary, integrate the new messages into it — update or replace outdated information rather than appending.
+Keep it concise. A few dense paragraphs are better than an exhaustive log. If there is a current summary, integrate the new messages into it — update or replace outdated information rather than appending.`;
 
-${input}`;
+  async function runCompaction(input: string): Promise<string> {
+    const ep = config.endpointConfig;
+
+    // OpenAI-compatible endpoint: make an HTTP API call
+    if (ep?.type === "openai" && ep.url && ep.apiKey) {
+      return await runCompactionViaAPI(input, ep);
+    }
+
+    // CLI endpoint: spawn claude/gemini process
+    return await runCompactionViaCLI(input);
+  }
+
+  async function runCompactionViaAPI(input: string, ep: EndpointConfig): Promise<string> {
+    const url = `${ep.url!.replace(/\/+$/, "")}/chat/completions`;
+    const model = ep.model || "default";
+
+    console.log(`[context] Running compaction via API (${config.backend}, model: ${model})`);
+
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${ep.apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: COMPACTION_SYSTEM_PROMPT },
+            { role: "user", content: input },
+          ],
+          max_tokens: 4096,
+        }),
+      },
+      { label: "compaction" },
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Compaction API error ${res.status}: ${body.slice(0, 500)}`);
+    }
+
+    const json = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = json.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Compaction API returned no content");
+
+    return content.trim();
+  }
+
+  async function runCompactionViaCLI(input: string): Promise<string> {
+    const prompt = `${COMPACTION_SYSTEM_PROMPT}\n\n${input}`;
 
     const env = { ...process.env };
     delete env.CLAUDECODE;
