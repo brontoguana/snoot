@@ -1490,7 +1490,12 @@ export function createProxy(config: Config) {
       await flushChunkBuffer(true);
 
       // Empty response — tell the user (only if nothing was streamed)
+      // Skip if the process was killed (e.g. /stop) — the command handler already notified the user
       if (!response && textCharsSent === 0 && chunkBuffer.length === 0) {
+        if (!llm.isAlive()) {
+          console.log(`[proxy] ${backendName} process was killed, skipping empty response notification`);
+          return;
+        }
         console.log(`[proxy] ${backendName} returned empty response`);
         await sessionClient.send(`${backendName} returned an empty response — it may have hit a limit. Try again.`);
         return;

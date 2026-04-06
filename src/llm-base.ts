@@ -411,6 +411,14 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     stopHealthCheck();
     try { proc.kill("SIGKILL"); } catch {}
     proc = null;
+
+    // Resolve pending resolvers so waitForResponse() callers don't hang
+    const pending = responseResolvers;
+    responseResolvers = [];
+    for (const { resolve } of pending) {
+      resolve(accumulatedText || "");
+    }
+    accumulatedText = "";
   }
 
   function send(text: string, promptFile?: string): void {
@@ -471,6 +479,18 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
     }
 
     proc = null;
+
+    // Resolve pending response resolvers immediately — the exit handler will
+    // see this as a "stale exit" (proc !== thisProc) and skip them, so we
+    // must resolve here to unblock waitForResponse() callers (e.g. /stop).
+    const pending = responseResolvers;
+    responseResolvers = [];
+    for (const { resolve } of pending) {
+      resolve(accumulatedText || "");
+    }
+    accumulatedText = "";
+
+    for (const cb of exitCallbacks) cb();
   }
 
   function onExit(cb: () => void): void {
