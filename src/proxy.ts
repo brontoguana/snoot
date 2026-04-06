@@ -438,9 +438,18 @@ export function createProxy(config: Config) {
         await sessionClient.send(`Updated: v${VERSION} -> ${newVersion}\nRestarting...`);
       } catch {}
 
-      // Give the message time to send, then restart
+      // Spawn the new binary before exiting — there's no supervisor to respawn us
+      watchLog(`🔄 /update: spawning new process with: ${config.selfCommand.join(" ")}`);
+      if (llm.isAlive()) await llm.kill();
       await new Promise(r => setTimeout(r, 1000));
-      process.exit(0); // daemon will respawn with new binary
+      Bun.spawn(config.selfCommand, {
+        cwd: config.workDir,
+        env: process.env,
+        stdout: "inherit",
+        stderr: "inherit",
+        stdin: "ignore",
+      }).unref();
+      process.exit(0);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       watchLog(`❌ /update: error: ${msg}`);
