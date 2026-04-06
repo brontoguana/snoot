@@ -13,7 +13,7 @@ const RESERVED_COMMANDS = new Set([
   "pin", "pins", "unpin", "profile", "save", "overwrite", "rename",
   "move", "relocate", "stop", "kill", "compact", "restart", "forget",
   "clear", "claude", "gemini", "codex", "model", "effort", "update",
-  "endpoint", "emoji", "auto", "report", "btw",
+  "latest", "endpoint", "emoji", "auto", "report", "btw",
 ]);
 
 export function handleCommand(
@@ -69,6 +69,7 @@ export function handleCommand(
           "  /rename <name> — change display name",
           "  /move <name> — move to new channel",
           "  /relocate <path> — change working directory",
+          "  /latest — check latest downloadable version",
           "  /update — update snoot to latest version",
           "  /auto <msg> — auto-send msg after each response",
           "  /auto off — cancel auto mode",
@@ -430,6 +431,7 @@ export function handleCommand(
     case "/model":
     case "/effort":
     case "/emoji":
+    case "/latest":
     case "/update":
       return null;
 

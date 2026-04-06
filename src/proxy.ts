@@ -347,6 +347,38 @@ export function createProxy(config: Config) {
     }
   }
 
+  async function handleLatest(): Promise<void> {
+    try {
+      const resp = await fetch("https://api.github.com/repos/brontoguana/snoot/releases/latest", {
+        headers: { "Accept": "application/vnd.github+json" },
+      });
+      if (!resp.ok) {
+        await safeSend(`Failed to check latest version (HTTP ${resp.status}).`);
+        return;
+      }
+      const data = await resp.json() as { tag_name?: string; published_at?: string; assets?: { name: string; size: number }[] };
+      const tag = data.tag_name || "unknown";
+      const published = data.published_at ? new Date(data.published_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "unknown";
+      const assets = (data.assets || []).map(a => `  ${a.name} (${(a.size / 1024 / 1024).toFixed(1)}MB)`).join("\n");
+
+      const lines: string[] = [];
+      lines.push(`Latest: ${tag} (${published})`);
+      lines.push(`Running: v${VERSION}`);
+      if (tag === `v${VERSION}`) {
+        lines.push("Up to date.");
+      } else {
+        lines.push("Run /update to install.");
+      }
+      if (assets) {
+        lines.push("", "Downloads:", assets);
+      }
+      await safeSend(lines.join("\n"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await safeSend(`Failed to check latest version: ${msg}`);
+    }
+  }
+
   async function handleUpdate(): Promise<void> {
     watchLog(`🔄 /update: updating snoot`);
     try {
@@ -1037,6 +1069,12 @@ export function createProxy(config: Config) {
           processQueue();
         }
       }
+      return;
+    }
+
+    // /latest — check latest downloadable version
+    if (trimmed.toLowerCase() === "/latest") {
+      handleLatest().catch(err => console.error("[proxy] /latest error:", err));
       return;
     }
 
