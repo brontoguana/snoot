@@ -43,8 +43,13 @@ export function createGeminiManager(config: Config): LLMManager {
       const args = [
         cfg.cliPath || "gemini",
         "-o", "stream-json",
-        "--yolo",
       ];
+
+      if (cfg.mode === "research") {
+        args.push("--approval-mode", "plan");
+      } else {
+        args.push("--yolo");
+      }
 
       if (cfg.model) args.push("-m", cfg.model);
       // We pass an empty prompt via -p to force headless mode,

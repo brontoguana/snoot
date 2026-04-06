@@ -43,7 +43,7 @@ export function handleCommand(
           "  /context — show summary, pins, recent activity",
           "",
           "LLM",
-          "  /<name> — switch to any endpoint (e.g. /claude /kimi /glm)",
+          "  /<name> [plan] — switch endpoint (e.g. /claude, /gemini plan)",
           "  /endpoint [name] — switch or list endpoints",
           "  /model <name> — switch model (opus, sonnet, etc.)",
           "  /effort <level> — low/medium/high/max/default",

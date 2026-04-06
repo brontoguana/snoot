@@ -889,14 +889,26 @@ export function createProxy(config: Config) {
 
     // /claude, /gemini, /codex, /kimi, /glm, etc. — shortcuts for /endpoint <name>
     // Any single-word slash command matching a configured endpoint name works as a switch
+    // Optional "plan" argument puts the endpoint in read-only (research) mode
     {
-      const epCmd = trimmed.match(/^\/(\S+)$/i);
+      const epCmd = trimmed.match(/^\/(\S+)(?:\s+(plan))?$/i);
       if (epCmd) {
         const epName = epCmd[1].toLowerCase();
+        const planMode = !!epCmd[2];
         const endpoints = loadEndpoints();
         if (epName in endpoints) {
-          watchLog(`🔄 Switching to ${epName}`);
-          switchEndpoint(epName).then(msg => safeSend(msg));
+          const modeLabel = planMode ? " (plan)" : "";
+          watchLog(`🔄 Switching to ${epName}${modeLabel}`);
+          switchEndpoint(epName).then(msg => {
+            if (planMode) {
+              config.mode = "research";
+              if (llm.isAlive()) llm.kill();
+              saveSettings();
+              safeSend(`${msg}\nMode: read-only (plan). Use /mode coding to restore full access.`);
+            } else {
+              safeSend(msg);
+            }
+          });
           return;
         }
       }
