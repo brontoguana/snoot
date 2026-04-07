@@ -314,9 +314,9 @@ export function createContextStore(config: Config): ContextStore {
   // -- Message-count based compaction --
 
   function needsCompaction(): boolean {
-    // Compact when message count exceeds window + 10
+    // Compact when message count exceeds window size
     const unpinned = recent.filter((p) => !p.pinned);
-    return unpinned.length > config.windowSize + 10;
+    return unpinned.length >= config.windowSize;
   }
 
   async function compact(aggressive?: boolean): Promise<{ compacted: number; remaining: number } | null> {
@@ -329,10 +329,9 @@ export function createContextStore(config: Config): ContextStore {
       const target = Math.floor(config.windowSize / 2);
       compactCount = Math.max(1, unpinned.length - target);
     } else {
-      // Auto-compact: trim back to windowSize
-      const excess = unpinned.length - config.windowSize;
-      if (excess <= 0) return null;
-      compactCount = excess;
+      // Auto-compact: trim down to windowSize - 7
+      const target = Math.max(1, config.windowSize - 7);
+      compactCount = Math.max(1, unpinned.length - target);
     }
 
     // Never compact everything
@@ -399,8 +398,8 @@ export function createContextStore(config: Config): ContextStore {
       } else {
         state.recentFiles.unshift({ path: filePath, ops: [op], timestamp: now });
       }
-      // Cap at 10
-      state.recentFiles = state.recentFiles.slice(0, 10);
+      // Cap at 5
+      state.recentFiles = state.recentFiles.slice(0, 5);
       saveState();
       return;
     }
@@ -410,10 +409,17 @@ export function createContextStore(config: Config): ContextStore {
       const cmd = detail.slice(6).trim();
       if (!state.recentCommands) state.recentCommands = [];
       // Deduplicate and move to front
+      // Filter out common inspection tools — prefer script runs, builds, etc.
+      const FILTERED_CMD_PREFIXES = ["ls ", "ls\t", "find ", "grep ", "rg ", "sed ", "cat ", "awk "];
+      const isFiltered = FILTERED_CMD_PREFIXES.some(p => cmd.startsWith(p)) || ["ls", "find", "grep", "rg", "sed", "cat", "awk"].includes(cmd);
+      if (isFiltered) {
+        saveState();
+        return;
+      }
       state.recentCommands = [
         { cmd, timestamp: now },
         ...state.recentCommands.filter(c => c.cmd !== cmd),
-      ].slice(0, 5);
+      ].slice(0, 6);
       saveState();
     }
   }

@@ -30,7 +30,7 @@ export interface Config {
   model?: string; // model override (e.g. "opus", "sonnet", "gemini-2.5-pro")
   effort?: string; // effort level: "low", "medium", "high", "max" (Claude only)
   budgetUsd?: number; // undefined = no budget limit
-  windowSize: number; // max message pairs in conversation history (default 20; compact when exceeded by 10)
+  windowSize: number; // max message pairs in conversation history (default 22; compact at 22, down to 15)
   baseDir: string; // snoot data directory (.snoot/<channel>)
   workDir: string; // working directory for claude processes
   endpointConfig?: EndpointConfig; // resolved endpoint config for current backend

@@ -985,7 +985,7 @@ Options:
   --backend <endpoint>  LLM endpoint to use (default: first available)
   --endpoint <endpoint> Same as --backend
   --budget <usd>        Max budget per message in USD (no limit by default)
-  --window <n>          Conversation window size in messages (default: 20)
+  --window <n>          Conversation window size in messages (default: 22)
   --fg                  Run in foreground instead of daemonizing
 
 Commands:
@@ -1047,7 +1047,7 @@ Commands:
   let mode: Mode = "coding";
   let backend: Backend = "claude";
   let budgetUsd: number | undefined = undefined;
-  let windowSize = 20;
+  let windowSize = 22;
   let foreground = false;
   let backendFromCli = false;
 
@@ -1077,8 +1077,8 @@ Commands:
         windowSize = parseInt(args[++i] ?? "20", 10);
         if (windowSize > 1000) {
           // Migrate old token-based value to reasonable message count
-          console.log(`[snoot] Migrating old token-based --context-budget ${windowSize} to message count 20`);
-          windowSize = 20;
+          console.log(`[snoot] Migrating old token-based --context-budget ${windowSize} to message count 22`);
+          windowSize = 22;
         }
         break;
       case "--fg":
@@ -1165,7 +1165,7 @@ Commands:
 
   // Resolve window size: --window flag > settings.json > global config > default
   const windowFromCli = args.some((a, i) => (a === "--window" || a === "--context-budget") && args[i + 1]);
-  if (!windowFromCli && windowSize === 20 && globalConfig?.windowSize !== undefined) {
+  if (!windowFromCli && windowSize === 22 && globalConfig?.windowSize !== undefined) {
     windowSize = globalConfig.windowSize;
   }
 
@@ -1423,7 +1423,7 @@ async function main(): Promise<void> {
   console.log(`  Mode: ${config.mode}`);
   console.log(`  Working dir: ${config.workDir}`);
   console.log(`  Budget: ${config.budgetUsd !== undefined ? `$${config.budgetUsd.toFixed(2)}/message` : "unlimited"}`);
-  console.log(`  Window: ${config.windowSize} messages (compact at +10)`);
+  console.log(`  Window: ${config.windowSize} messages (compact to ${Math.max(1, config.windowSize - 7)})`);
 
   console.log(`  CLI path: ${config.cliPath || "(not found)"}`);
   if (!config.cliPath) {

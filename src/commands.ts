@@ -201,7 +201,7 @@ export function handleCommand(
     case "/window": {
       if (!args) {
         return {
-          response: `Window: ${config.windowSize} messages\nCompaction at: ${config.windowSize + 10} messages\nCurrent: ${context.getRecent().length} messages in window\n\nUsage: /window <n> (e.g. /window 20)`,
+          response: `Window: ${config.windowSize} messages\nCompaction at: ${config.windowSize} messages (down to ${Math.max(1, config.windowSize - 7)})\nCurrent: ${context.getRecent().length} messages in window\n\nUsage: /window <n> (e.g. /window 22)`,
         };
       }
       const n = parseInt(args, 10);
