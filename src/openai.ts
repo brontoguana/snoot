@@ -1451,7 +1451,8 @@ export function createOpenAIManager(config: Config): LLMManager {
       return accumulatedText;
     }
 
-    return accumulatedText || `[Reached maximum of ${MAX_TURNS} tool-calling turns]`;
+    const cutoffWarning = `\n\n⚠️ Hard cutoff: reached maximum of ${MAX_TURNS} tool-calling turns. Work may be incomplete. Send another message to continue where I left off.`;
+    return accumulatedText ? accumulatedText + cutoffWarning : `[Reached maximum of ${MAX_TURNS} tool-calling turns]`;
   }
 
   function send(text: string, promptFile?: string): void {
