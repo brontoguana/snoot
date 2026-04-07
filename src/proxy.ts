@@ -119,6 +119,8 @@ export function createProxy(config: Config) {
 
   /** Send a response that may contain inline SVG blocks, <attach> tags, or both */
   async function sendRichResponse(text: string): Promise<void> {
+    // Condense triple+ newlines to double newlines — saves space on phone screens
+    while (text.includes("\n\n\n")) text = text.replace(/\n\n\n/g, "\n\n");
     const segments = extractSvgBlocks(text);
 
     // No rich content — send as plain text
