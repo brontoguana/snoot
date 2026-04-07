@@ -1,8 +1,22 @@
 import type { Config, LLMManager, LLMStatus, Backend } from "./types.js";
+import { TOOLS_BY_MODE } from "./types.js";
 
 const RATE_LIMIT_RETRY_DELAY = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
 const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
+
+/** Kill a process and all its descendants (children, grandchildren, etc.) */
+function killProcessTree(pid: number): void {
+  // Find children first, then kill bottom-up so parents don't respawn children
+  try {
+    const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+    const children = result.stdout.toString().trim().split("\n").filter(Boolean);
+    for (const childPid of children) {
+      killProcessTree(Number(childPid));
+    }
+  } catch {}
+  try { process.kill(pid, "SIGKILL"); } catch {}
+}
 
 export type OutputEvent =
   | { kind: "text"; text: string }
@@ -101,7 +115,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
       try {
         process.kill(pid, 0);
         console.error(`[${label}] ORPHAN DETECTED: pid ${pid} still alive (current: ${currentPid ?? "none"}) — killing`);
-        try { process.kill(pid, 9); } catch {}
+        killProcessTree(pid);
         spawnedPids.delete(pid);
       } catch {
         spawnedPids.delete(pid);
@@ -272,11 +286,36 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
           console.log(`[${label}] Accumulated text: ${accumulatedText.slice(0, 100)}...`);
           for (const cb of chunkCallbacks) cb(event.text);
           break;
-        case "tool_use":
+        case "tool_use": {
+          // Enforce tool restrictions for non-coding modes (research/chat)
+          const toolName = event.detail.split(/[\s:]/)[0]; // e.g. "Bash" from "Bash: npm run build"
+          const allowedTools = config.mode !== "coding" ? TOOLS_BY_MODE[config.mode] : null;
+          if (allowedTools !== null && toolName && !allowedTools.split(",").includes(toolName)) {
+            console.log(`[${label}] BLOCKED tool "${toolName}" — not allowed in ${config.mode} mode`);
+            emitActivity(`🚫 Blocked ${toolName} (read-only mode)`);
+            // Kill the entire process tree immediately — the tool may already be running
+            if (proc) {
+              const pid = proc.pid;
+              alive = false;
+              stopHealthCheck();
+              killProcessTree(pid);
+              proc = null;
+              // Resolve pending resolvers so the proxy doesn't hang
+              const pending = responseResolvers;
+              responseResolvers = [];
+              for (const { resolve } of pending) {
+                resolve(accumulatedText || `[Stopped — ${toolName} is not allowed in ${config.mode} mode]`);
+              }
+              accumulatedText = "";
+              for (const cb of exitCallbacks) cb();
+            }
+            break;
+          }
           console.log(`[${label}] Tool use: ${event.detail}`);
           emitActivity(`🔧 ${event.detail}`);
           for (const cb of toolUseCallbacks) cb(event.trackingDetail ?? event.detail);
           break;
+        }
         case "rate_limit":
           rateLimitDetected = true;
           rateLimitReason = event.reason;
@@ -407,9 +446,10 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
   /** Synchronous SIGKILL — for use in SIGTERM/SIGINT handlers */
   function forceKill(): void {
     if (!proc) return;
+    const pid = proc.pid;
     alive = false;
     stopHealthCheck();
-    try { proc.kill("SIGKILL"); } catch {}
+    killProcessTree(pid);
     proc = null;
 
     // Resolve pending resolvers so waitForResponse() callers don't hang
@@ -445,6 +485,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
   async function kill(): Promise<void> {
     if (!proc || !alive) return;
 
+    const pid = proc.pid;
     alive = false;
     stopHealthCheck();
 
@@ -462,7 +503,7 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
       ]);
 
       if (graceful === null) {
-        // SIGTERM
+        // SIGTERM the main process
         proc.kill("SIGTERM");
         const termed = await Promise.race([
           proc.exited,
@@ -470,12 +511,13 @@ export function createBaseLLMManager(config: Config, hooks: BackendHooks): LLMMa
         ]);
 
         if (termed === null) {
-          // SIGKILL
-          proc.kill("SIGKILL");
+          // SIGKILL the entire process tree (main + children like bash builds)
+          killProcessTree(pid);
         }
       }
     } catch {
-      // Process already dead
+      // Process already dead — still kill the tree in case children survived
+      killProcessTree(pid);
     }
 
     proc = null;

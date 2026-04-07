@@ -47,6 +47,8 @@ export function createGeminiManager(config: Config): LLMManager {
 
       if (cfg.mode === "research") {
         args.push("--approval-mode", "plan");
+        // Prepend strong read-only instructions — plan mode alone is unreliable in headless mode
+        fullPrompt = "IMPORTANT: You are in READ-ONLY mode. You must NOT use write_file, replace, run_shell_command, or any tool that modifies files or runs commands. Only use read_file, grep_search, glob, google_web_search, and web_fetch.\n\n" + fullPrompt;
       } else {
         args.push("--yolo");
       }
