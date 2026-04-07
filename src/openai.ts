@@ -1379,9 +1379,11 @@ export function createOpenAIManager(config: Config): LLMManager {
 
         for (const tc of result.toolCalls) {
           let args: any;
+          let parseError = false;
           try {
             args = JSON.parse(tc.arguments);
           } catch {
+            parseError = true;
             args = {};
             console.error(`[${label}] Failed to parse tool args for ${tc.name}: ${tc.arguments.slice(0, 200)}`);
           }
@@ -1392,7 +1394,9 @@ export function createOpenAIManager(config: Config): LLMManager {
           emitActivity(`🔧 ${detail}`);
           for (const cb of toolUseCallbacks) cb(trackingDetail);
 
-          let toolResult = await executeTool(tc.name, args, config.workDir);
+          let toolResult = parseError
+            ? `Error: Failed to parse tool arguments (malformed JSON). Your tool call for ${tc.name} had invalid/truncated arguments. Please retry with valid JSON.`
+            : await executeTool(tc.name, args, config.workDir);
           lastActivityAt = Date.now();
 
           // Cap individual tool results to prevent a single Read from blowing out context
