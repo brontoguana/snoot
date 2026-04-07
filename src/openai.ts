@@ -3,7 +3,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import type { Config, LLMManager, LLMStatus, Mode } from "./types.js";
 import { TOOLS_BY_MODE } from "./types.js";
 
-const MAX_TURNS = 50;
+const MAX_TURNS = 500;
+const TURN_WARNINGS = [300, 400, 475];
 const RATE_LIMIT_RETRY_DELAY = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 5;
 const API_ERROR_RETRY_DELAYS = [30_000, 60_000];
@@ -1420,6 +1421,14 @@ export function createOpenAIManager(config: Config): LLMManager {
             tool_call_id: tc.id,
             name: tc.name,
             content: toolResult,
+          });
+        }
+
+        // Warn the model when approaching the turn limit so it can wrap up
+        if (TURN_WARNINGS.includes(turns)) {
+          messages.push({
+            role: "user",
+            content: `⚠️ You have used ${turns} of ${MAX_TURNS} tool-calling turns. You have ${MAX_TURNS - turns} turns remaining. Please wrap up your work and provide a final response soon.`,
           });
         }
 
