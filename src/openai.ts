@@ -1108,6 +1108,7 @@ export function createOpenAIManager(config: Config): LLMManager {
     resolve: (text: string) => void;
     reject: (err: Error) => void;
   }> = [];
+  const pendingInjections: string[] = [];
 
   const ep = config.endpointConfig!;
   const baseUrl = (ep.url || "").replace(/\/$/, "");
@@ -1288,6 +1289,16 @@ export function createOpenAIManager(config: Config): LLMManager {
 
       if (signal.aborted) return accumulatedText || "[Request cancelled]";
 
+      // Drain any injected user messages (sent while we were executing tools)
+      while (pendingInjections.length > 0) {
+        const injected = pendingInjections.shift()!;
+        messages.push({ role: "user", content: `[User added]: ${injected}` });
+        console.log(`[${label}] Injected user message (turn ${turns}): ${injected.slice(0, 100)}`);
+        emitActivity(`📨 User: ${injected.slice(0, 80)}`);
+        // Emit to chunk callbacks so it appears in context trace
+        emitChunk(`\n\n[User added]: ${injected}\n\n`);
+      }
+
       // Proactively trim old tool results if context is getting large
       trimOldContent(messages);
 
@@ -1452,6 +1463,16 @@ export function createOpenAIManager(config: Config): LLMManager {
       if (result.finishReason === "length") {
         accumulatedText += "\n\n⚠️ Response was truncated (hit output token limit). You may want to ask me to continue, or switch to a model with higher output capacity.";
       }
+
+      // If user injected a message while we were waiting for this response,
+      // push the assistant's reply into the conversation and continue the loop
+      // so the model can respond to the injected message.
+      if (pendingInjections.length > 0) {
+        messages.push({ role: "assistant", content: result.content || "" });
+        console.log(`[${label}] Model finished but ${pendingInjections.length} injected message(s) pending — continuing loop`);
+        continue;
+      }
+
       return accumulatedText;
     }
 
@@ -1532,6 +1553,7 @@ export function createOpenAIManager(config: Config): LLMManager {
     isPendingRetry,
     cancelRetry,
     send,
+    injectMessage: (text: string) => { pendingInjections.push(text); },
     waitForResponse,
     kill,
     forceKill,

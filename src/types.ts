@@ -116,6 +116,7 @@ export interface LLMManager {
   isPendingRetry(): boolean;
   cancelRetry(): void;
   send(text: string, promptFile?: string): void;
+  injectMessage?(text: string): void; // inject user message into running agent loop (OpenAI only)
   waitForResponse(): Promise<string>;
   kill(): Promise<void>;
   forceKill(): void; // synchronous SIGKILL — for use in SIGTERM handlers

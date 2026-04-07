@@ -1120,6 +1120,14 @@ export function createProxy(config: Config) {
       return;
     }
 
+    // If the LLM is mid-agent-loop and supports injection, inject directly
+    // instead of queueing. The model will see it on its next turn.
+    if (processing && llm.isAlive() && llm.injectMessage) {
+      console.log(`[proxy] Injecting message into running agent loop: ${msg.text.slice(0, 100)}`);
+      llm.injectMessage(msg.text);
+      return;
+    }
+
     messageQueue.push(msg.text);
 
     // Watchdog: if processing has been stuck for too long, force-reset
