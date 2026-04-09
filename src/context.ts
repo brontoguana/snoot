@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync } from "fs";
 import { join, relative, basename } from "path";
-import type { Config, ContextStore, ContextState, EndpointConfig, MessagePair, PinnedItem, RecentCommand } from "./types.js";
+import type { Config, ContextExport, ContextStore, ContextState, EndpointConfig, MessagePair, PinnedItem, RecentCommand } from "./types.js";
 import { fetchWithRetry } from "./openai.js";
 
 const ARCHIVE_RETENTION_DAYS = 30;
@@ -588,6 +588,34 @@ Keep it concise. A few dense paragraphs are better than an exhaustive log. If th
     return state.nextId++;
   }
 
+  function exportData(): ContextExport {
+    return {
+      version: 1,
+      exportedAt: Date.now(),
+      pins: [...state.pins],
+      summary,
+      recent: [...recent],
+      recentFiles: [...(state.recentFiles || [])],
+      recentCommands: [...(state.recentCommands || [])],
+      totalPairs: state.totalPairs,
+      nextId: state.nextId,
+    };
+  }
+
+  function importData(data: ContextExport): void {
+    state.pins = data.pins || [];
+    state.recentFiles = data.recentFiles || [];
+    state.recentCommands = data.recentCommands || [];
+    state.totalPairs = data.totalPairs || 0;
+    state.nextId = Math.max(state.nextId, data.nextId || 1);
+    summary = data.summary || "";
+    recent = data.recent || [];
+
+    saveState();
+    saveRecent();
+    writeFileSync(summaryPath, summary);
+  }
+
   return {
     load,
     append,
@@ -602,5 +630,7 @@ Keep it concise. A few dense paragraphs are better than an exhaustive log. If th
     getSummary,
     reset,
     nextPairId,
+    exportData,
+    importData,
   };
 }

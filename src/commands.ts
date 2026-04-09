@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, chmodSync, statSync } from "fs";
 import { resolve, dirname } from "path";
 import { homedir } from "os";
-import type { Config, CommandResult, ContextStore, LLMManager, Mode } from "./types.js";
+import type { Config, CommandResult, ContextExport, ContextStore, LLMManager, Mode } from "./types.js";
 import { VERSION } from "./version.js";
 import { endpointDisplayName, loadEndpoints } from "./utils.js";
 
@@ -13,7 +13,7 @@ const RESERVED_COMMANDS = new Set([
   "pin", "pins", "unpin", "profile", "save", "overwrite", "rename",
   "move", "relocate", "stop", "kill", "compact", "restart", "forget",
   "clear", "claude", "gemini", "codex", "model", "effort", "update",
-  "latest", "endpoint", "emoji", "auto", "report", "btw",
+  "latest", "endpoint", "emoji", "auto", "report", "btw", "export", "import",
 ]);
 
 export function handleCommand(
@@ -56,6 +56,8 @@ export function handleCommand(
           "  /unpin <id> — remove a pin",
           "  /window <n> — set conversation window size",
           "  /compact — force context compaction",
+          "  /export — export context to ~/.snoot/export.json",
+          "  /import — import context from a previous /export",
           "  /forget — clear all context and restart",
           "",
           "FILES",
@@ -388,6 +390,48 @@ export function handleCommand(
         response: `Relocating to ${targetDir}. Restarting...`,
         relocateDir: targetDir,
       };
+    }
+
+    case "/export": {
+      const exportPath = resolve(homedir(), ".snoot", "export.json");
+      try {
+        const data = context.exportData();
+        mkdirSync(resolve(homedir(), ".snoot"), { recursive: true });
+        writeFileSync(exportPath, JSON.stringify(data, null, 2));
+        const pinCount = data.pins.length;
+        const msgCount = data.recent.length;
+        return {
+          response: `Exported ${msgCount} messages, ${pinCount} pins, and summary to ~/.snoot/export.json\n\nRun /import on another agent to load this context.`,
+        };
+      } catch (err) {
+        return { response: `Export failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+
+    case "/import": {
+      const importPath = resolve(homedir(), ".snoot", "export.json");
+      if (!existsSync(importPath)) {
+        return { response: "No export found. Run /export on another agent first." };
+      }
+      try {
+        const raw = readFileSync(importPath, "utf-8");
+        const data: ContextExport = JSON.parse(raw);
+        if (data.version !== 1) {
+          return { response: `Unknown export version: ${data.version}` };
+        }
+        context.importData(data);
+        const pinCount = data.pins.length;
+        const msgCount = data.recent.length;
+        const age = Date.now() - data.exportedAt;
+        const mins = Math.floor(age / 60_000);
+        const ageStr = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ago`;
+        return {
+          response: `Imported ${msgCount} messages, ${pinCount} pins, and summary (exported ${ageStr}).`,
+          killProcess: true,
+        };
+      } catch (err) {
+        return { response: `Import failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
     }
 
     case "/stop":

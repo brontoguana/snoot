@@ -178,6 +178,18 @@ export interface CommandResult {
 
 // -- Context Store --
 
+export interface ContextExport {
+  version: 1;
+  exportedAt: number;
+  pins: PinnedItem[];
+  summary: string;
+  recent: MessagePair[];
+  recentFiles: RecentFile[];
+  recentCommands: RecentCommand[];
+  totalPairs: number;
+  nextId: number;
+}
+
 export interface ContextStore {
   load(): Promise<void>;
   append(pair: MessagePair): Promise<void>;
@@ -192,6 +204,8 @@ export interface ContextStore {
   getSummary(): string;
   reset(): Promise<void>;
   nextPairId(): number;
+  exportData(): ContextExport;
+  importData(data: ContextExport): void;
 }
 
 // -- Tools per mode --
