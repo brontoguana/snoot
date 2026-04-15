@@ -74,7 +74,7 @@ export function handleCommand(
           "  /latest — check latest downloadable version",
           "  /update — update snoot to latest version",
           "  /auto <msg> — auto-send msg after each response",
-          "  /auto off — cancel auto mode",
+          "  /auto off — cancel auto mode (also stops on ✅ or 🚩)",
           "  /stop — cancel current request (+ auto mode)",
           "  /restart — restart snoot",
           "",
