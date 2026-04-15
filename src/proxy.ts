@@ -1396,11 +1396,18 @@ export function createProxy(config: Config) {
         }
       }
 
-      // Auto mode: re-inject the auto message after each successful response
-      if (autoMessage && messageQueue.length === 0) {
-        watchLog(`🔄 Auto: injecting "${autoMessage}"`);
-        safeSend(`🤖 ${autoMessage}`);
-        messageQueue.push(autoMessage);
+      // Auto mode: cancel if agent signaled completion, otherwise re-inject
+      if (autoMessage) {
+        const traceText = contextTrace.join("");
+        if (traceText.includes("✅") || traceText.includes("🚩")) {
+          autoMessage = null;
+          watchLog(`🔄 Auto mode off (agent signaled completion)`);
+          safeSend("Auto mode off (agent finished).");
+        } else if (messageQueue.length === 0) {
+          watchLog(`🔄 Auto: injecting "${autoMessage}"`);
+          safeSend(`🤖 ${autoMessage}`);
+          messageQueue.push(autoMessage);
+        }
       }
     }
 
