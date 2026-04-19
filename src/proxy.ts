@@ -60,6 +60,7 @@ export function createProxy(config: Config) {
   let pendingAvatar = false;
   let pendingCliInstall = false;
   let autoMessage: string | null = null; // /auto mode: message to re-inject after each LLM response
+  let lastAutoMessage: string | null = null; // last /auto message, for /resume
   type BufferEntry = { type: "text"; content: string } | { type: "tool"; content: string };
   let chunkBuffer: BufferEntry[] = [];
   let textCharsSent = 0;
@@ -1070,6 +1071,7 @@ export function createProxy(config: Config) {
         }
       } else {
         autoMessage = autoArg;
+        lastAutoMessage = autoArg;
         watchLog(`🔄 Auto mode on: "${autoArg}"`);
         safeSend(`Auto mode on. Will send "${autoArg}" after each response.\nSend /stop or /auto off to cancel.`);
         // If idle, kick-start by injecting the auto message now
@@ -1077,6 +1079,26 @@ export function createProxy(config: Config) {
           watchLog(`🔄 Auto: kick-starting with "${autoArg}"`);
           safeSend(`🤖 ${autoArg}`);
           messageQueue.push(autoArg);
+          processQueue();
+        }
+      }
+      return;
+    }
+
+    // /resume — re-enable auto mode with the previous /auto message
+    if (trimmed.toLowerCase() === "/resume") {
+      if (autoMessage) {
+        safeSend(`Auto mode is already on: "${autoMessage}"`);
+      } else if (!lastAutoMessage) {
+        safeSend("No previous auto message to resume.");
+      } else {
+        autoMessage = lastAutoMessage;
+        watchLog(`🔄 Auto mode resumed: "${autoMessage}"`);
+        safeSend(`Auto mode resumed. Will send "${autoMessage}" after each response.\nSend /stop or /auto off to cancel.`);
+        if (!processing) {
+          watchLog(`🔄 Auto: kick-starting with "${autoMessage}"`);
+          safeSend(`🤖 ${autoMessage}`);
+          messageQueue.push(autoMessage);
           processQueue();
         }
       }

@@ -13,7 +13,7 @@ const RESERVED_COMMANDS = new Set([
   "pin", "pins", "unpin", "profile", "save", "overwrite", "rename",
   "move", "relocate", "stop", "kill", "compact", "restart", "forget",
   "clear", "claude", "gemini", "codex", "model", "effort", "update",
-  "latest", "endpoint", "emoji", "auto", "report", "btw", "export", "import",
+  "latest", "endpoint", "emoji", "auto", "resume", "report", "btw", "export", "import",
 ]);
 
 export function handleCommand(
@@ -75,6 +75,7 @@ export function handleCommand(
           "  /update — update snoot to latest version",
           "  /auto <msg> — auto-send msg after each response",
           "  /auto off — cancel auto mode (also stops on ✅ or 🚩)",
+          "  /resume — re-enable auto mode with the last /auto message",
           "  /stop — cancel current request (+ auto mode)",
           "  /restart — restart snoot",
           "",

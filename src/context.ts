@@ -575,7 +575,8 @@ Keep it concise. A few dense paragraphs are better than an exhaustive log. If th
   }
 
   async function reset(): Promise<void> {
-    state = { nextId: 1, totalPairs: 0, pins: [], recentFiles: [], recentCommands: [] as RecentCommand[] };
+    const savedPins = state.pins || [];
+    state = { nextId: 1, totalPairs: 0, pins: savedPins, recentFiles: [], recentCommands: [] as RecentCommand[] };
     recent = [];
     summary = "";
     saveState();
